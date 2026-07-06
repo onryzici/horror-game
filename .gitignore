@@ -1,0 +1,4 @@
+# Godot import onbellegi (otomatik uretilir, commit edilmez)
+.godot/
+*.import.tmp
+.DS_Store
