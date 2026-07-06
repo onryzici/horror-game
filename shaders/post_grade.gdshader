@@ -9,6 +9,7 @@ uniform float zoom_pixelate : hint_range(0.0, 4.0) = 0.0;
 uniform float zoom_grain : hint_range(0.0, 0.2) = 0.0;
 uniform vec2 motion_blur = vec2(0.0);
 uniform float vignette_strength : hint_range(0.0, 1.0) = 0.34;
+uniform float tension_dark : hint_range(0.0, 1.0) = 0.0;
 uniform float ca_strength : hint_range(0.0, 3.0) = 0.5;
 uniform float saturation : hint_range(0.0, 2.0) = 0.88;
 uniform float contrast : hint_range(0.5, 1.5) = 1.06;
@@ -61,6 +62,8 @@ void fragment() {
 
 	// vinyet
 	float vig = 1.0 - vignette_strength * smoothstep(0.08, 0.55, r2);
+	// gerilim kararmasi: muzik yogunlasirken kenarlar iceri dogru kapanir
+	vig *= 1.0 - tension_dark * smoothstep(0.03, 0.40, r2);
 	col *= vig;
 
 	// film grain — luma agirlikli (golgelerde daha cok), her kare yenilenir

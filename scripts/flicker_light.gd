@@ -8,6 +8,8 @@ extends OmniLight3D
 @export var tube: MeshInstance3D
 @export var buzz: AudioStreamPlayer3D  # cizirti — isikla birlikte bozulur
 
+var blackout := false          # true iken lamba tamamen soner (olay sistemi kullanir)
+
 var _noise := FastNoiseLite.new()
 var _t := 0.0
 
@@ -21,6 +23,8 @@ func _process(delta: float) -> void:
 	var e := base_energy * (1.0 - flicker_amount + flicker_amount * n)
 	if _noise.get_noise_1d(_t * 4.1 + 100.0) > dropout_threshold:
 		e *= 0.25
+	if blackout:
+		e = 0.0
 	light_energy = e
 	if tube and tube.material_override is StandardMaterial3D:
 		var m: StandardMaterial3D = tube.material_override

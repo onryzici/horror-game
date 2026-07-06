@@ -5,6 +5,8 @@ render_mode blend_mix, depth_draw_never, cull_disabled, unshaded;
 
 uniform float alpha_mul : hint_range(0.0, 1.0) = 1.0;
 uniform float phase = 0.0;
+// 0 = yirtik seffaf duman, 1 = kesif simsiyah kutle (bulut govde)
+uniform float solidity : hint_range(0.0, 1.0) = 0.0;
 uniform vec3 core_color : source_color = vec3(0.008, 0.010, 0.016);
 uniform vec3 rim_color : source_color = vec3(0.10, 0.16, 0.22);
 
@@ -55,8 +57,9 @@ void fragment() {
 	// altta bacaksiz erime, tepede yumusak kapanis
 	float hfade = smoothstep(-0.9, -0.15, vpos.y) * (1.0 - smoothstep(0.72, 1.02, vpos.y));
 
-	float a = alpha_mul * hfade * tatters * (1.0 - fr * 0.9);
-	ALBEDO = core_color;
-	EMISSION = rim_color * fr * 0.35;
+	float body = mix(tatters, 1.0, solidity);
+	float a = alpha_mul * hfade * body * (1.0 - fr * mix(0.9, 0.3, solidity));
+	ALBEDO = core_color * (1.0 - solidity * 0.6);
+	EMISSION = rim_color * fr * 0.35 * (1.0 - solidity * 0.85);
 	ALPHA = clamp(a, 0.0, 1.0);
 }

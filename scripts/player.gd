@@ -12,6 +12,10 @@ const ZOOM_IN_RATE := 0.9   # birim/sn (basiliyken)
 const ZOOM_OUT_RATE := 2.4  # birim/sn (birakinca)
 
 var cam: Camera3D
+var sens_mult := 1.0        # ESC menusu ayarlar (%20-%300 → 0.2-3.0)
+var base_fov := BASE_FOV    # ESC menusu ayarlar (60-90)
+var locked := false         # CCTV vb. ekran acikken hareket/bakis kilidi
+var has_flashlight := false # fener zimmet masasindan alinana kadar F calismaz
 var _yaw := 0.0
 var _pitch := 0.0
 var _zooming := false
@@ -36,10 +40,15 @@ func _ready() -> void:
 
 	cam = Camera3D.new()
 	cam.position.y = 1.62
-	cam.fov = BASE_FOV
+	cam.fov = base_fov
 	cam.near = 0.05
 	cam.attributes = CameraAttributesPractical.new()
 	add_child(cam)
+
+	# el terminali (TAB) — diegetic HUD, kameraya bagli
+	var term := Node3D.new()
+	term.set_script(load("res://scripts/terminal.gd"))
+	cam.add_child(term)
 
 	# el feneri: dunyada serbest pivot, kamerayi yumusak takip eder (gercekci gecikme)
 	_fl_pivot = Node3D.new()
@@ -65,8 +74,10 @@ func set_view(yaw_deg: float, pitch_deg: float) -> void:
 	_pitch = deg_to_rad(pitch_deg)
 
 func _unhandled_input(event: InputEvent) -> void:
+	if locked:
+		return
 	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
-		var sens := MOUSE_SENS / sqrt(_zoom)
+		var sens := MOUSE_SENS * sens_mult / sqrt(_zoom)
 		_yaw -= event.relative.x * sens
 		_pitch = clampf(_pitch - event.relative.y * sens, -1.45, 1.45)
 	elif event is InputEventMouseButton:
@@ -78,14 +89,31 @@ func _unhandled_input(event: InputEvent) -> void:
 		elif event.pressed and Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
 			Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 	elif event is InputEventKey and event.pressed and not event.echo:
-		if event.physical_keycode == KEY_ESCAPE:
-			Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
-		elif event.physical_keycode == KEY_F:
+		# ESC artik pause_menu.gd'de — burada ele alinmaz
+		if event.physical_keycode == KEY_F and has_flashlight:
 			_flashlight.visible = not _flashlight.visible
+		elif event.physical_keycode == KEY_E:
+			var t := _aim_target()
+			if t and t.has_meta("on_interact"):
+				(t.get_meta("on_interact") as Callable).call()
+
+
+## Kameranin bakis dogrultusundaki etkilesilebilir nesne (2.4 m menzil)
+func _aim_target() -> Node:
+	if cam == null:
+		return null
+	var from := cam.global_position
+	var to := from - cam.global_transform.basis.z * 2.4
+	var q := PhysicsRayQueryParameters3D.create(from, to, 0xFFFFFFFF, [get_rid()])
+	var hit := get_world_3d().direct_space_state.intersect_ray(q)
+	if hit.is_empty():
+		return null
+	var c := hit.collider as Node
+	return c if c.is_in_group("interactable") else null
 
 func _physics_process(delta: float) -> void:
 	var dir := Vector3.ZERO
-	if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
+	if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and not locked:
 		var f := -Vector3(sin(_yaw), 0, cos(_yaw))
 		var r := Vector3(cos(_yaw), 0, -sin(_yaw))
 		if Input.is_physical_key_pressed(KEY_W):
@@ -111,7 +139,7 @@ func _process(delta: float) -> void:
 	# dijital zoom: yumusak lens hissi — hedefe ussel yaklasma, ani hareket yok
 	var zoom_target := ZOOM_MAX if _zooming else 1.0
 	_zoom = lerpf(_zoom, zoom_target, 1.0 - exp(-5.5 * delta))
-	cam.fov = rad_to_deg(2.0 * atan(tan(deg_to_rad(BASE_FOV * 0.5)) / _zoom))
+	cam.fov = rad_to_deg(2.0 * atan(tan(deg_to_rad(base_fov * 0.5)) / _zoom))
 
 	# bas sallanmasi (yurume) + zoomda el titremesi
 	var hspeed := Vector2(velocity.x, velocity.z).length()
@@ -162,3 +190,11 @@ func _process(delta: float) -> void:
 	if lbl and lbl is Label:
 		lbl.visible = _zoom > 1.05
 		lbl.text = "ZOOM %.1fx" % _zoom
+
+	# etkilesim ipucu: bakilan nesne etkilesilebilirse goster
+	var il := get_tree().get_first_node_in_group("interact_label")
+	if il and il is Label:
+		var tgt := _aim_target()
+		il.visible = tgt != null and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED
+		if tgt:
+			il.text = str(tgt.get_meta("prompt", "[E]"))
