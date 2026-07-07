@@ -25,6 +25,14 @@ const HALL_Z1 := -22.5                  # kuzey duvar (kepenkli cikis)
 const HALL_HW := 8.5                    # yari genislik
 const HALL_H := 3.2                     # tavan yuksekligi (zeminden)
 
+# ---- servis koridoru + asansor (Sekans 1 mekani, ofisin batisi) ----
+const COR_X0 := -21.0                   # koridor bati ucu = asansor kapi duzlemi
+const COR_X1 := -14.25                  # ofis bati duvarinin dis (koridor) yuzu
+const COR_Z0 := -11.8                   # guney ic duvar
+const COR_Z1 := -13.8                   # kuzey ic duvar
+const COR_H := 2.55                     # koridor tavani (alcak, servis hissi)
+const ELEV_CZ := -12.8                  # asansor/koridor ekseni (z)
+
 # ---- peron olculeri ----
 const PLAT_L := 15.0                    # peron yari uzunlugu (x: -15..15)
 const PLAT_D := 7.6                     # peron derinligi (z: 0..7.6)
@@ -46,7 +54,7 @@ var mat_tactile: ShaderMaterial
 var mat_metal: StandardMaterial3D
 var mat_steel_rail: StandardMaterial3D
 var mat_pipe: StandardMaterial3D
-var mat_paint: StandardMaterial3D
+var mat_paint: ShaderMaterial
 var mat_nosing: StandardMaterial3D
 var mat_void: StandardMaterial3D
 var mat_navy: StandardMaterial3D
@@ -64,6 +72,53 @@ var _switch_lever: MeshInstance3D
 var _switch_done := false
 var _plat_lights: Array = []
 var _aux_lights: Array = []              # cukur/tunel/kafes isiklari (karartmada soner)
+var _hall_lights: Array = []             # ust hol armaturleri (anons strobe olayi)
+var _office_door: Node3D                 # menteseli ofis kapisi (pivot, kuzey sove)
+var _office_door_body: StaticBody3D      # kapi etkilesim govdesi (prompt guncellenir)
+var _office_door_open := false           # ofis celik kapisi KAPALI baslar
+var _door_busy := false
+# ---- sekans durumu (Sekans 1: inis, Sekans 2: ofis) ----
+var _seq := 0                            # 0=asansorde, 1=koridor, 2=ofiste, 3=gorevde
+var _elev_holder: Node3D                 # animasyonlu asansor modeli (simple_elevator)
+var _elev_extras: Node3D                 # kabin isigi + ugultu + ic colliderlar
+var _elev_cage: Node3D                   # kabin ici (sekans bitince serbest birakilir)
+var _elev_anim: AnimationPlayer          # kapi animasyonu (0-2.5 acilis, 3.7-6.25 kapanis)
+var _elev_blocker_cs: CollisionShape3D   # kapi kapaliyken gecisi engeller
+var _elev_doors_open := false
+var _elev_hum: AudioStreamPlayer3D
+var _office_entered := false
+var _fener_alindi := false
+var _terminal_alindi := false
+var _cctv_line_said := false
+var _first_task_given := false
+# --- VARDIYA BASLATMA PROSEDURU (Sekans 2) ---
+# adim: 0 baslamadi, 1 defter, 2 salter, 3 dock, 4 kamera, 5 tarama, 6 ekipman, 7 bitti
+var _proc_step := 0
+var _office_lights: Array = []           # ofis ana armaturleri (karanlik baslar)
+var _office_emergency: OmniLight3D       # los acil aydinlatma (basta acik)
+var _office_emergency2: OmniLight3D      # ikinci los kaynak (giris/pano tarafi)
+var _office_lit := false
+var _office_desk_lamp: OmniLight3D
+var _office_switch_lever: MeshInstance3D
+var _console_body: StaticBody3D          # retro bilgisayar (dock/kamera/cctv)
+var _dock_pos: Vector3                    # terminal dock konumu (adim 3)
+var _ledger_signed := false
+var _office_switch_done := false
+var _dock_done := false
+var _cams_activated := false
+var _tprop_node: Node3D                   # masadaki terminal prop (dock'a tasinir)
+var _fener_pil_takildi := false
+var _kart_alindi := false
+var _sigorta_alindi := false
+var _journal_alindi := false
+# GOREV GUNLUGU: [[metin, tamamlandi], ...] — journal.gd okur, J ile gosterilir
+var _journal_tasks: Array = []
+var _mus: AudioStreamPlayer              # gerilim muzigi (bagam duyarli baslar)
+var _music_started := false
+var _glass_door: Node3D                  # camli OFIS kapisi (koridor <-> ofis)
+var _glass_door_body: StaticBody3D
+var _glass_open := false
+var _glass_busy := false
 var _scare: Node3D                       # golge figur (gec asamada aktiflesir)
 var _blackout_busy := false
 # gorev zinciri: 0 salter, 1 turnike tara, 2 T-3 bulundu, 3 anons+Yolcu,
@@ -84,19 +139,53 @@ func _on_panel_switch() -> void:
 	_switch_done = true
 	var tw := create_tween()
 	tw.tween_property(_switch_lever, "rotation:x", deg_to_rad(-35.0), 0.16)
+	# salter kalkti: peron katina ENERJI gelir — isiklar teker teker yanar
+	_power_up_platform()
 	get_tree().create_timer(1.8).timeout.connect(func() -> void:
 		var r := get_tree().get_first_node_in_group("radio")
 		if r:
-			r.call("say", "MERKEZ", "...Gördüm. Besleme geldi. İyi iş.", 3.5)
+			r.call("say", "MERKEZ", "...Gördüm, gördüm. Besleme geldi. Aferin sana.", 0.0)
 			r.call("say", "MERKEZ",
-					"Sıradaki iş yukarıda. Hole çık — turnikelerden gece sinyali alamıyorum. Beşi de ölü görünüyor.", 7.0)
+					"Sıradaki iş yukarıda. Hole dön, turnikelerden sinyal alamıyorum bir türlü. Beşi de ölü görünüyor buradan.", 0.0)
 			r.call("say", "MERKEZ",
-					"Terminalini aç, TARAMA modu. Beşini de tek tek doğrula bana.", 5.0)
+					"Terminali aç, tarama moduna al. Beşini de tek tek doğrula bana.", 0.0)
 		var term := get_tree().get_first_node_in_group("terminal")
 		if term:
 			term.call("add_log", "TAMAM> A panosu beslemede")
 			term.call("add_log", "GÖREV> üst hol: turnikeleri tara")
+		_journal_done("Peron katına in, A panosunu kaldır")
+		_journal_add("Üst holde turnikeleri terminalle tara")
 		_quest = 1)
+
+
+## Peron kati baslangicta ENERJISIZ (karanlik) — ilk gorev A panosu salteri.
+## _build_lights sonunda cagrilir; _plat_lights sonuk, _aux_lights kapali.
+func _set_platform_power(on: bool) -> void:
+	for lt in _plat_lights:
+		if is_instance_valid(lt):
+			(lt as Node).set("blackout", not on)
+	for a in _aux_lights:
+		if is_instance_valid(a):
+			(a as Node3D).visible = on
+
+
+## Salter kalkinca: role "clunk" + isiklar soldan saga teker teker yanar
+## (elektrik geliyor hissi) + floresan cizirtisi. Karanlik peron aydinlanir.
+func _power_up_platform() -> void:
+	# role sesi (A panosunun konumundan)
+	_snd_at(_make_clack(), Vector3(-4.3, 1.5, 0.2), -2.0, 0.8, 4.0, 40.0)
+	# aux (cukur/tunel) enerjisi hemen gelir
+	for a in _aux_lights:
+		if is_instance_valid(a):
+			(a as Node3D).visible = true
+	# floresanlar soldan saga sirayla "tık"layarak yanar
+	for i in _plat_lights.size():
+		var lt: Node = _plat_lights[i]
+		get_tree().create_timer(0.12 + i * 0.13).timeout.connect(func() -> void:
+			if is_instance_valid(lt):
+				lt.set("blackout", false)
+				var pos: Vector3 = ((lt as Node3D).get_parent() as Node3D).position
+				_snd_at(_make_clack(), pos, -12.0, 1.5, 3.0, 20.0))
 
 
 ## Terminal T-3'u taradi (UYUMSUZ): MERKEZ gecistirir — ilk catlak
@@ -105,14 +194,15 @@ func on_anomaly_scanned(_n: Node) -> void:
 		return
 	_anomaly_notified = true
 	_quest = 2
+	_journal_done("Üst holde turnikeleri terminalle tara")
 	get_tree().create_timer(1.2).timeout.connect(func() -> void:
 		var r := get_tree().get_first_node_in_group("radio")
 		if r:
-			r.call("say", "MERKEZ", "...Ne çıktı?", 2.4)
-			r.call("say", "MERKEZ", "T-üç mü? ...Dur, bakıyorum.", 3.5)
+			r.call("say", "MERKEZ", "...Ne çıktı sende?", 0.0)
+			r.call("say", "MERKEZ", "T-üç mü dedin? ...Dur, bir bakayım şuna.", 0.0)
 			r.call("say", "MERKEZ",
-					"...Boşver onu. Eski arıza, kartı çürük. Kayda geçme.", 4.5)
-			r.call("say", "MERKEZ", "Diğerleri temizse işin bitti orada.", 3.5)
+					"...Ha, o. Boş ver. Eski arıza, kartı çürümüş. Kayda geçirme sen.", 0.0)
+			r.call("say", "MERKEZ", "Ötekiler temiz çıktıysa işin bitti orada.", 0.0)
 		var term := get_tree().get_first_node_in_group("terminal")
 		if term:
 			term.call("add_log", "TARAMA> T-3: UYUMSUZ (kayıt: düşülmedi)")
@@ -132,12 +222,14 @@ func _anons_event() -> void:
 	sp.play(randf_range(5.0, 20.0))
 	get_tree().create_timer(8.0).timeout.connect(func() -> void:
 		sp.queue_free())
+	# garip ses bir seyi "uyandirir": hol isiklari duzensiz strobe + ofis kapisi carpar
+	_hall_panic(8.5)
 	var r := get_tree().get_first_node_in_group("radio")
 	if r:
 		r.call("say", "[ANONS]",
-				"Bir sonraki tren: Hisar-yedi... Hisar-yedi... Hisar-yedi...", 7.0)
-		r.call("say", "MERKEZ", "...Bu anonsu ben çalmadım.", 3.5)
-		r.call("say", "MERKEZ", "Sistem eski. Kayıt takılmıştır, o kadar. Perona in sen.", 5.0)
+				"Sayın yolcularımız... bir sonraki istasyon: Hisar-yedi. ...Hisar-yedi. ...Hisar-yedi...", 7.0)
+		r.call("say", "MERKEZ", "...Bu anonsu ben çalmadım ama.", 0.0)
+		r.call("say", "MERKEZ", "Sistem eski işte, kayıt takılmıştır. Sen perona in, boş ver.", 0.0)
 	var term := get_tree().get_first_node_in_group("terminal")
 	if term:
 		term.call("add_log", "GÖREV> perona dön")
@@ -146,6 +238,79 @@ func _anons_event() -> void:
 	# fisiltilar ancak bu andan itibaren baslar (anons bir seyi "uyandirdi")
 	if _whisper_stream != null:
 		_schedule_whisper(randf_range(45.0, 80.0))
+
+
+## Anons olayi: ust hol isiklari sure boyunca DUZENSIZ (senkronsuz) yanip soner,
+## ofis kapisi kendiliginden carparak kapanir. Sonunda isiklar normale doner.
+func _hall_panic(dur: float) -> void:
+	# kapi kendiliginden kapanir (aciksa) — carpma sesi kapanma aninda
+	if _office_door != null and _office_door_open and not _door_busy:
+		_door_busy = true
+		var tw := create_tween()
+		tw.set_ease(Tween.EASE_IN)
+		tw.set_trans(Tween.TRANS_QUAD)
+		tw.tween_property(_office_door, "rotation:y", 0.0, 0.28)
+		tw.finished.connect(func() -> void:
+			_office_door_open = false
+			_door_busy = false
+			if _office_door_body:
+				_office_door_body.set_meta("prompt", "[E]  KAPIYI AÇ")
+			_door_sound(-2.0, 0.92))
+	for lt in _hall_lights:
+		if is_instance_valid(lt):
+			(lt as Node).set("panic", true)
+	get_tree().create_timer(dur).timeout.connect(func() -> void:
+		for lt in _hall_lights:
+			if is_instance_valid(lt):
+				(lt as Node).set("panic", false))
+
+
+## Konumsal tek atimlik ses (calinca kendini temizler)
+func _snd_at(stream: AudioStream, pos: Vector3, vol: float, pitch := 1.0,
+		unit := 3.0, maxd := 35.0) -> void:
+	if stream == null:
+		return
+	var sp := AudioStreamPlayer3D.new()
+	sp.stream = stream
+	sp.volume_db = vol
+	sp.pitch_scale = pitch
+	sp.unit_size = unit
+	sp.max_distance = maxd
+	sp.position = pos
+	add_child(sp)
+	sp.play()
+	sp.finished.connect(sp.queue_free)
+
+
+## Kapi sesi (close_door.wav) — celik ofis kapisinin konumundan
+func _door_sound(vol: float, pitch: float) -> void:
+	if _office_door == null:
+		return
+	_snd_at(load("res://assets/audio/close_door.wav"),
+			_office_door.position + Vector3(0, 1.2, 0.5), vol, pitch)
+
+
+## Ofis kapisi: E ile ac/kapa (mentese kuzey sovede)
+func _toggle_office_door() -> void:
+	if _door_busy or _office_door == null:
+		return
+	_door_busy = true
+	_office_door_open = not _office_door_open
+	var target := deg_to_rad(-150.0) if _office_door_open else 0.0
+	var tw := create_tween()
+	tw.set_ease(Tween.EASE_OUT)
+	tw.set_trans(Tween.TRANS_CUBIC)
+	tw.tween_property(_office_door, "rotation:y", target,
+			0.9 if _office_door_open else 0.7)
+	tw.finished.connect(func() -> void:
+		_door_busy = false
+		if not _office_door_open:
+			_door_sound(-10.0, 1.0))
+	if _office_door_open:
+		_door_sound(-18.0, 1.3)          # acilis: hafif kol/mentese sesi
+	if _office_door_body:
+		_office_door_body.set_meta("prompt",
+				"[E]  KAPIYI KAPAT" if _office_door_open else "[E]  KAPIYI AÇ")
 
 
 ## Yolcu: bankta oturan, nefes almayan figur (CLAUDE.md Bolum 1).
@@ -206,8 +371,8 @@ func on_yolcu_scanned(_n: Node) -> void:
 	get_tree().create_timer(1.0).timeout.connect(func() -> void:
 		var r := get_tree().get_first_node_in_group("radio")
 		if r:
-			r.call("say", "MERKEZ", "Dur— ...o mu? Manken o, manken. Depo malı.", 4.5)
-			r.call("say", "MERKEZ", "Yaklaşma istersen. Devrilirse tutanak yazarız, uğraşamam.", 5.0))
+			r.call("say", "MERKEZ", "Dur... şu mu? Manken o, manken. Depodan kalma bir şey.", 0.0)
+			r.call("say", "MERKEZ", "İstersen hiç yaklaşma. Devrilir, başımıza tutanak çıkar, uğraşamam şimdi.", 0.0))
 
 
 ## Cok yaklasinca Yolcu fisiltiyla kaybolur; MERKEZ inkar eder
@@ -233,16 +398,16 @@ func _vanish_yolcu() -> void:
 	get_tree().create_timer(2.5).timeout.connect(func() -> void:
 		var r := get_tree().get_first_node_in_group("radio")
 		if r:
-			r.call("say", "MERKEZ", "...Nefesin değişti. Ne oldu orada?", 3.5)
-			r.call("say", "MERKEZ", "Beni dinle. Peronda senden başka kimse yok. Yok.", 5.0)
-			r.call("say", "MERKEZ", "...Anlaşıldı mı? Devam.", 3.0))
+			r.call("say", "MERKEZ", "...Nefesin değişti senin. Ne oldu orada?", 0.0)
+			r.call("say", "MERKEZ", "Beni dinle. O peronda senden başka kimse yok. Kimse.", 0.0)
+			r.call("say", "MERKEZ", "...Anlaştık mı? Hadi, devam.", 0.0))
 	# bir sonraki halka: MERKEZ oyuncuyu peronun sol ucuna yollar (karartma orada kurulu)
 	get_tree().create_timer(18.0).timeout.connect(func() -> void:
 		var r := get_tree().get_first_node_in_group("radio")
 		if r:
 			r.call("say", "MERKEZ",
-					"...Peki. Son bir iş kaldı: peronun sol ucu, ankesörün orada B panosu var.", 6.0)
-			r.call("say", "MERKEZ", "Göstergeyi oku bana. Sonra çıkış evrakını hazırlıyorum.", 4.5)
+					"...Neyse. Son bir iş kaldı. Peronun sol ucunda, ankesörlü telefonun orada bir B panosu var.", 0.0)
+			r.call("say", "MERKEZ", "Göstergeyi oku bana. Ben de çıkış kâğıtlarını hazırlarım, biter bu iş.", 0.0)
 		var term := get_tree().get_first_node_in_group("terminal")
 		if term:
 			term.call("add_log", "GÖREV> sol uç: B panosu göstergesi")
@@ -308,15 +473,15 @@ func _trigger_blackout() -> void:
 	await get_tree().create_timer(4.0).timeout
 	var r := get_tree().get_first_node_in_group("radio")
 	if r:
-		r.call("say", "MERKEZ", "...Pano düştü. Hisar-yedi? Orada mısın? Cevap ver.", 5.0)
+		r.call("say", "MERKEZ", "...Pano düştü. Alo? Orada mısın? Cevap versene.", 0.0)
 	await get_tree().create_timer(2.5).timeout
 	for lt in _plat_lights:
 		(lt as Node).set("blackout", false)
 	for a in _aux_lights:
 		(a as Node3D).visible = true
 	if r:
-		r.call("say", "MERKEZ", "...Geldi mi ışıklar? Tamam. Tamam, iyi.", 4.0)
-		r.call("say", "MERKEZ", "Eski bina dedim ya. ...B panosunu boşver şimdi. Olduğun yerde bekle.", 5.5)
+		r.call("say", "MERKEZ", "...Işıklar geldi mi? Tamam. Tamam, iyi. Geçmiş olsun.", 0.0)
+		r.call("say", "MERKEZ", "Eski bina dedim ya sana. ...B panosunu boş ver şimdilik. Olduğun yerde bekle biraz.", 0.0)
 	_quest = 5
 	# zincirin devami: az sonra ankesorlu telefon calar (oyuncu hala o uctayken)
 	get_tree().create_timer(randf_range(14.0, 22.0)).timeout.connect(_phone_ring_event)
@@ -365,9 +530,9 @@ func _phone_ring_event() -> void:
 	await get_tree().create_timer(2.0).timeout
 	var r := get_tree().get_first_node_in_group("radio")
 	if r:
-		r.call("say", "MERKEZ", "...O ses neydi? Telefon mu çaldı?", 3.5)
-		r.call("say", "MERKEZ", "O hat on bir yıldır kesik evladım.", 4.0)
-		r.call("say", "MERKEZ", "...Açmadın, değil mi?", 3.0)
+		r.call("say", "MERKEZ", "...O ne sesi öyle? Telefon mu o, çalan?", 0.0)
+		r.call("say", "MERKEZ", "O hattın fişini on bir yıl önce çektik. On bir yıl.", 0.0)
+		r.call("say", "MERKEZ", "...Açmadın onu, değil mi?", 0.0)
 	_quest = 6
 	# bundan sonra golge figur silahlanabilir (peron ucu + arkani donme korkutmasi)
 	get_tree().create_timer(25.0).timeout.connect(func() -> void:
@@ -564,12 +729,16 @@ func _trigger_sound(pos: Vector3, size: Vector3, stream: AudioStream,
 	sp.max_distance = 30.0
 	area.add_child(sp)
 	area.set_meta("last_t", -1e9)
+	# FADE-IN: ses ani yuksek tondan patlamasin — kisik baslar, hedefe cikar
 	area.body_entered.connect(func(body: Node3D) -> void:
 		if body is CharacterBody3D:
 			var now := Time.get_ticks_msec() / 1000.0
 			if now - float(area.get_meta("last_t")) > cooldown:
 				area.set_meta("last_t", now)
+				sp.volume_db = vol_db - 16.0
 				sp.play()
+				var ft := create_tween()
+				ft.tween_property(sp, "volume_db", vol_db, 0.7)
 	)
 	add_child(area)
 
@@ -580,6 +749,7 @@ func _ready() -> void:
 	_build_stairwell()
 	_build_upper_hall()
 	_build_office()
+	_build_service_corridor()
 	_build_platform()
 	_build_props()
 	_build_rails()
@@ -592,33 +762,485 @@ func _ready() -> void:
 	_build_radio()
 	_build_events()
 	_build_cctv()
+	_build_examine()
+	_build_journal()
 	_build_intro()
 	add_to_group("quest_mgr")
 	_maybe_screenshot()
 
 
-## Telsis + acilis replikleri (MERKEZ vardiyayi baslatir, ilk gorevi verir)
+## Telsis kurulumu; acilis diyalogu SEKANS 1'de akar (_seq1_run)
 func _build_radio() -> void:
 	var r := CanvasLayer.new()
 	r.set_script(load("res://scripts/radio.gd"))
 	r.add_to_group("radio")
 	add_child(r)
-	# acilis: once karanlik + baslik (intro); MERKEZ acele etmez, dogal telsiz dili
-	get_tree().create_timer(14.0).timeout.connect(func() -> void:
-		r.call("say", "MERKEZ", "Hisar-yedi, Hisar-yedi. Merkez konuşuyor. Duyuyorsan söyle.", 5.5)
-		r.call("say", "MERKEZ", "...Tamam, sinyalin geldi. İyi.", 3.5)
-		r.call("say", "MERKEZ",
-				"Gece vardiyası sende evladım. Ben buradayım, kanal hep açık.", 5.5)
-		r.call("say", "MERKEZ",
-				"Acele etme. Masandaki terminali ve feneri üstüne al — ikisi de zimmetli.", 6.0))
-	get_tree().create_timer(42.0).timeout.connect(func() -> void:
-		r.call("say", "MERKEZ", "Hazırsan başlıyoruz. Ofisten çık, hole geç.", 4.5)
-		r.call("say", "MERKEZ",
-				"Merdivenden peron katına in. Duvarda A yazan pano var — kapağındaki ana şalteri kaldır.", 6.5)
-		r.call("say", "MERKEZ", "Basit iş. Yapınca söyle.", 3.0)
+	_seq1_run.call_deferred()
+
+
+## Obje inceleme sistemi (E ile modeli ekrana getir, dondur — examine.gd)
+func _build_examine() -> void:
+	var e := CanvasLayer.new()
+	e.set_script(load("res://scripts/examine.gd"))
+	add_child(e)
+
+
+## Gorev gunlugu (J ile acilan not defteri — journal.gd)
+func _build_journal() -> void:
+	var j := CanvasLayer.new()
+	j.set_script(load("res://scripts/journal.gd"))
+	add_child(j)
+
+
+## Gunluge gorev ekle (varsa tekrar ekleme)
+func _journal_add(text: String) -> void:
+	for t in _journal_tasks:
+		if str(t[0]) == text:
+			return
+	_journal_tasks.append([text, false])
+
+
+## Gunlukteki gorevi tamamla (ustu cizilir)
+func _journal_done(text: String) -> void:
+	for t in _journal_tasks:
+		if str(t[0]) == text:
+			t[1] = true
+			return
+
+
+## Incelenebilir obje: bakis + E ile inceleme modu acar (model ekrana gelir).
+## Gorsel modeli _prop zaten koyar; bu yalniz etkilesim govdesi + examine cagrisi.
+func _examine_body(pos: Vector3, size: Vector3, prompt: String,
+		model_path: String, title: String, desc: String) -> void:
+	var b := StaticBody3D.new()
+	b.add_to_group("interactable")
+	b.set_meta("prompt", prompt)
+	b.set_meta("on_interact", func() -> void:
+		var e := get_tree().get_first_node_in_group("examine")
+		if e:
+			e.call("open", model_path, title, desc))
+	var c := CollisionShape3D.new()
+	var bs := BoxShape3D.new()
+	bs.size = size
+	c.shape = bs
+	c.position = pos
+	b.add_child(c)
+	add_child(b)
+
+
+## MERKEZ repliği (sure otomatik hesaplanir)
+func _rsay(speaker: String, text: String) -> void:
+	var r := get_tree().get_first_node_in_group("radio")
+	if r:
+		r.call("say", speaker, text, 0.0)
+
+
+## Telsiz kuyrugu bosalana kadar bekle
+func _radio_idle() -> void:
+	var r := get_tree().get_first_node_in_group("radio")
+	if r == null:
+		return
+	await get_tree().create_timer(0.3).timeout
+	while bool(r.call("is_busy")):
+		await get_tree().create_timer(0.2).timeout
+
+
+# ------------------------------------------------------------ SEKANS 1: INIS
+
+## Asansorde acilis: ugultu + nefes, MERKEZ-KAYA diyalogu (Q ile cevap),
+## yavaslamа, clank, TAM sessizlik, kapi acilir. (~2 dk, kisa)
+func _seq1_run() -> void:
+	# ekran karanlik (intro karti), asansor ugultusu zaten caliyor
+	# Kaya'nin nefesi: kisik, bir kez (kullanicinin kaydi)
+	await get_tree().create_timer(2.0).timeout
+	var breath: AudioStream = load("res://assets/audio/breath_swell.mp3")
+	if breath != null:
+		var bp := AudioStreamPlayer.new()
+		bp.stream = breath
+		bp.volume_db = -18.0
+		add_child(bp)
+		bp.play()
+		bp.finished.connect(bp.queue_free)
+	# intro (kulaklik + HISAR-7 kartlari) bitip goruntu acildiktan az sonra telsiz
+	# CALAR (cagri gelir). Q ile cevap verince hat acilir. Merkez ismini kullanmaz.
+	await get_tree().create_timer(9.0).timeout
+	_rsay("MERKEZ", "Alo... beni duyuyor musun? İnişe geçtin mi?")
+	_rsay("BEN", "Duyuyorum, duyuyorum. Bu saatte adam mı çağrılır yahu.")
+	_rsay("MERKEZ", "Kusura bakma, elimde değildi. Senin gibi işbilir biri lazımdı bana.")
+	_rsay("MERKEZ", "Adın neydi senin ya... neyse, boş ver. Şimdi önemi yok.")
+	_rsay("MERKEZ", "İnince dosdoğru ofise geç. Takımların orada. Ben yönlendiririm seni.")
+	await _radio_idle()
+	# kisa gundelik sessizlik, sonra varis
+	await get_tree().create_timer(1.6).timeout
+	await _elev_arrive()
+
+
+## Varis: ugultu peser/kisilir, ugultu keser, kisa sessizlik, kapi acilir.
+## (Kendi ekledigim varis "clank" sesi KALDIRILDI — istege gore.)
+func _elev_arrive() -> void:
+	if _elev_hum != null:
+		var tw := create_tween()
+		tw.tween_property(_elev_hum, "pitch_scale", 0.72, 1.6)
+		tw.parallel().tween_property(_elev_hum, "volume_db", -34.0, 1.6)
+		await tw.finished
+		_elev_hum.stop()
+	# kisa sessizlik, sonra kapi acilir (kapi sesi kisik — istege gore)
+	await get_tree().create_timer(1.0).timeout
+	_elev_doors(true, -18.0)
+	_seq = 1
+
+
+## Asansor kapilari: modelin kendi animasyonu (0-2.5 acilis, 3.7-6.25 kapanis).
+## Blocker collider acikken devre disi kalir.
+func _elev_doors(open: bool, vol := -6.0) -> void:
+	if _elev_anim == null or not is_instance_valid(_elev_anim) \
+			or _elev_doors_open == open:
+		return
+	_elev_doors_open = open
+	_snd_at(_make_elev_slide(), Vector3(COR_X0, TOP_Y + 1.0, ELEV_CZ), vol, 0.85, 3.0, 24.0)
+	var from := 0.0 if open else 3.7
+	var until := 2.5 if open else 6.25
+	_elev_anim.play("Animation")
+	_elev_anim.seek(from, true)
+	get_tree().create_timer(until - from).timeout.connect(func() -> void:
+		if _elev_anim != null and is_instance_valid(_elev_anim):
+			_elev_anim.pause())
+	if _elev_blocker_cs:
+		_elev_blocker_cs.set_deferred("disabled", open)
+
+
+## P/F12 foto modu (telsiz Q'yu radio.gd yonetir)
+func _unhandled_input(event: InputEvent) -> void:
+	if not (event is InputEventKey and event.pressed and not event.echo):
+		return
+	var key: int = (event as InputEventKey).physical_keycode
+	if key == KEY_P or key == KEY_F12:
+		_take_photo()
+
+
+## FOTO MODU: menusuz aninda ekran goruntusu → ~/Desktop/Peronomaly_shots/
+var _photo_label: Label
+var _photo_busy := false
+
+func _take_photo() -> void:
+	if _photo_busy:
+		return
+	_photo_busy = true
+	await RenderingServer.frame_post_draw
+	var img := get_viewport().get_texture().get_image()
+	var dir := OS.get_environment("HOME") + "/Desktop/Peronomaly_shots"
+	DirAccess.make_dir_recursive_absolute(dir)
+	var stamp := Time.get_datetime_string_from_system().replace(":", "-")
+	var path := "%s/shot_%s.png" % [dir, stamp]
+	img.save_png(path)
+	_photo_busy = false
+	if _photo_label:
+		_photo_label.text = "📷  %s" % path.get_file()
+		_photo_label.visible = true
+		get_tree().create_timer(2.2).timeout.connect(func() -> void:
+			if _photo_label:
+				_photo_label.visible = false)
+
+
+# ------------------------------------------------------------ SEKANS 2: OFIS
+
+## Ofise ilk giris: VARDIYA BASLATMA PROSEDURU baslar (panosuz — Merkez sesli
+## yonlendirir + terminal log). Ofis karanlik. Sira: PANO → IMZA → senkron →
+## kamera → tarama → ekipman. Her adimda TEK gorev (senkron bozulmasin).
+## _proc_step: 0 baslamadi, 1 salter, 2 imza, 3 senkron, 4 kamera, 5 tarama, 6 ekipman, 7 bitti
+func _on_office_entered() -> void:
+	if _office_entered:
+		return
+	_office_entered = true
+	_seq = 2
+	# hatti kesin ac — ofis+sonrasi tum replikler cagri yapmadan direkt aksin
+	var r0 := get_tree().get_first_node_in_group("radio")
+	if r0:
+		r0.call("establish_line")
+	get_tree().create_timer(1.2).timeout.connect(func() -> void:
+		_rsay("MERKEZ", "Geldin. Karanlık, farkındayım. Daha çalıştırmadık şurayı.")
+		_rsay("MERKEZ", "Kapının yanında ana şalter var. Önce onu kaldır da şu ışıkları verelim.")
+		_proc_step = 1
+		_journal_add("Vardiya başlatma prosedürünü tamamla"))
+	# asansor cagrilir gibi: kapilar uzaktan kapanir, sonra kabin ici birakilir
+	get_tree().create_timer(6.0).timeout.connect(func() -> void:
+		_elev_doors(false, -14.0)
+		get_tree().create_timer(4.0).timeout.connect(_free_elevator))
+
+
+## ADIM 1 — ANA SALTER: ofis ayaga kalkar (isiklar). Sonra imza adimina yonlendirir.
+func _office_main_switch() -> void:
+	if _proc_step != 1 or _office_switch_done:
+		return
+	_office_switch_done = true
+	_power_up_office()
+	get_tree().create_timer(2.6).timeout.connect(func() -> void:
+		_rsay("MERKEZ", "Hah, işte böyle. Ev gibi oldu şimdi burası.")
+		_rsay("MERKEZ", "Şimdi şu giriş defterini bir imzala, usulünce.")
+		_proc_step = 2)
+
+
+## Konsol prompt'u prosedur adimina gore degisir
+func _update_console_prompt() -> void:
+	if _console_body == null:
+		return
+	match _proc_step:
+		3: _console_body.set_meta("prompt", "[E]  SİSTEMİ BAŞLAT")
+		4: _console_body.set_meta("prompt", "[E]  KAMERALARI DEVREYE AL")
+		5: _console_body.set_meta("prompt", "[E]  KAMERALARI İZLE")
+		_: _console_body.set_meta("prompt", "[E]  GÜVENLİK KAMERALARI")
+
+
+## Konsol etkilesimi: prosedur adimina gore dallanir
+func _use_console() -> void:
+	match _proc_step:
+		1: _rsay("MERKEZ", "Acele etme. Önce ana şalteri kaldır, ışıklar gelsin.")
+		2: _rsay("MERKEZ", "Bir dakika. Önce şu giriş defterini imzala.")
+		3: _sync_system()
+		4: _start_camera_activation()
+		_: _open_cctv()   # adim 5+ : normal CCTV (terminal zimmet masasindan alinir)
+
+
+## ADIM 3 — SISTEM SENKRON: konsoldaki terminal senkronlanir (boot), is emri
+## kanali acilir. Terminal zaten dock'ta durur (tasima yok). Merkez pil/donus
+## mantigini anlatir — ileride ofise donme sisteminin cipasi.
+func _sync_system() -> void:
+	if _proc_step != 3 or _dock_done:
+		return
+	_dock_done = true
+	_snd_at(_make_clack(), _dock_pos, -16.0, 1.3, 3.0, 12.0)
+	get_tree().create_timer(1.0).timeout.connect(func() -> void:
+		_rsay("MERKEZ", "Senkron oluyor... tamam, hat açıldı.")
+		_rsay("MERKEZ", "O terminal sahada gözün kulağın. Ama pili sınırlı, ona göre. Bitti mi buraya gelip bağlarsın.")
 		var term := get_tree().get_first_node_in_group("terminal")
 		if term:
-			term.call("add_log", "GÖREV> peron katı: A panosu şalteri"))
+			term.call("add_log", "SİSTEM> senkron tamam — iş emri kanalı açık")
+		_proc_step = 4
+		_update_console_prompt())
+
+
+## ADIM 4 — KAMERALARI DEVREYE AL: CCTV activation modunda acilir
+func _start_camera_activation() -> void:
+	if _proc_step != 4:
+		return
+	var c := get_tree().get_first_node_in_group("cctv")
+	if c:
+		c.call("open", true)
+	get_tree().create_timer(0.8).timeout.connect(func() -> void:
+		_rsay("MERKEZ", "Kameralar kapalı şu an. Boşluk tuşuyla tek tek aç bakalım."))
+
+
+## CCTV bir kanal devreye aldi (adim 4 activation): Merkez o kanal icin konusur.
+## [DIYALOG:CAM] — metinler DIYALOGLAR.md'den.
+func on_camera_enabled(idx: int) -> void:
+	var lines := [
+		"Bir... üst peron. Bomboş. Olması gerektiği gibi.",
+		"İki, peronun doğu ucu. Temiz.",
+		"Üç... üst hol, turnikeler. Kimsecikler yok.",
+		"Dört, merdiven boşluğu. Sessiz sakin.",
+		"Beş, servis koridoru. Az önce geçtiğin yer işte.",
+		"Altı... alt peron. ...O ölü. Yıllardır kar taneleri, o kadar. Sen boş ver onu.",
+	]
+	if idx >= 0 and idx < lines.size():
+		_rsay("MERKEZ", lines[idx])
+
+
+## CCTV bildirdi: tum kameralar denendi (adim 4 → 5). CCTV acik kalir, oyuncu gezer.
+func on_cameras_activated() -> void:
+	if _proc_step != 4:
+		return
+	_proc_step = 5
+	_update_console_prompt()
+	get_tree().create_timer(0.5).timeout.connect(func() -> void:
+		_rsay("MERKEZ", "Hepsi devrede. Bir gez şunları, gözün alışsın. Sonra çıkarsın."))
+
+
+## CCTV kapatildi (cctv.gd bildirir). Adim 5 → 6: peron karanligini gordu, ekipman.
+func on_cctv_closed() -> void:
+	if _proc_step != 5:
+		return
+	_proc_step = 6
+	_update_console_prompt()
+	get_tree().create_timer(0.5).timeout.connect(func() -> void:
+		_rsay("MERKEZ", "Gördün mü peronun şu ucunu? Zifiri karanlık. Sigorta atmıştır.")
+		_rsay("MERKEZ", "İlk işin o zaten. Ama önce bir donan: fener, pil, kart, bir de yedek sigorta.")
+		_rsay("MERKEZ", "Terminali de konsoldan almayı unutma. Hepsi tamamsa sahaya çık.")
+		var term := get_tree().get_first_node_in_group("terminal")
+		if term:
+			term.call("add_log", "GÖREV> peron katı: A panosu şalteri")
+			term.call("add_log", "EKİPMAN> fener · pil · kart · sigorta · terminal"))
+
+
+## ADIM 6 — TERMINALI AL: ZIMMET MASASINDAN alinir, TAB aktiflesir
+func _take_terminal_from_desk() -> void:
+	if _proc_step < 6:
+		_rsay("BEN", "Daha sırası değil. Şu prosedürü bir bitireyim önce.")
+		return
+	if _terminal_alindi or not _pickup_nodes.has("terminal"):
+		return
+	for n in _pickup_nodes["terminal"]:
+		if is_instance_valid(n):
+			(n as Node).queue_free()
+	_pickup_nodes.erase("terminal")
+	_tprop_node = null
+	var term := get_tree().get_first_node_in_group("terminal")
+	if term:
+		term.set("acquired", true)
+	_terminal_alindi = true
+	_rsay("MERKEZ", "Terminal de sende. TAB'a bas, açılır. Basınç, sıcaklık, bir de hat gürültüsü.")
+	_equip_progress()
+	_check_equipment_done()
+
+
+## Ekipman ilerleme geri bildirimi (terminal log — "kac/5 tamam")
+func _equip_progress() -> void:
+	var n := int(_terminal_alindi) + int(_fener_alindi) + int(_fener_pil_takildi) \
+			+ int(_kart_alindi) + int(_sigorta_alindi)
+	var term := get_tree().get_first_node_in_group("terminal")
+	if term:
+		term.call("add_log", "EKİPMAN> %d/5 hazır" % n)
+
+
+## Ofisi ayaga kaldir: acil isik soner, ana armaturler + masa lambasi SIRAYLA
+## yanar (role clunk'lari), monitor ugultusu uyanir
+func _power_up_office() -> void:
+	_snd_at(_make_clack(), Vector3(-8.9, TOP_Y + 1.3, -13.6), -6.0, 0.8, 3.0, 20.0)
+	# acil isiklar yavasca soner
+	if _office_emergency:
+		var etw := create_tween()
+		etw.tween_property(_office_emergency, "light_energy", 0.0, 1.2)
+		etw.tween_callback(func() -> void: _office_emergency.visible = false)
+	if _office_emergency2:
+		var etw2 := create_tween()
+		etw2.tween_property(_office_emergency2, "light_energy", 0.0, 1.2)
+		etw2.tween_callback(func() -> void: _office_emergency2.visible = false)
+	# ana armaturler sirayla
+	for i in _office_lights.size():
+		var lt: Node = _office_lights[i]
+		get_tree().create_timer(0.5 + i * 0.5).timeout.connect(func() -> void:
+			if is_instance_valid(lt):
+				lt.set("blackout", false)
+				var pos: Vector3 = ((lt as Node3D).get_parent() as Node3D).position
+				_snd_at(_make_clack(), pos, -13.0, 1.4, 3.0, 16.0))
+	# masa lambasi
+	get_tree().create_timer(1.6).timeout.connect(func() -> void:
+		if _office_desk_lamp:
+			_office_desk_lamp.visible = true)
+	_office_lit = true
+
+
+## Kabin ICINI bellekten birak (sekans bitti; kapali dis kapilar + cerceve
+## kalir — koridordan bakinca asansor "gitmis" ama kapisi yerinde durur)
+func _free_elevator() -> void:
+	if _elev_cage != null and is_instance_valid(_elev_cage):
+		_elev_cage.queue_free()
+		_elev_cage = null
+	if _elev_extras != null and is_instance_valid(_elev_extras):
+		_elev_extras.queue_free()
+		_elev_extras = null
+	_elev_hum = null
+	_elev_anim = null   # kapi animasyonu artik oynatilmaz (ic kapi izleri koptu)
+
+
+## Ekipman tamam mi? Terminal + fener(+pil) + kart + sigorta alindiysa prosedur
+## biter ve oyuncu sahaya (peron sigorta gorevine) cikar.
+func _check_equipment_done() -> void:
+	if _first_task_given:
+		return
+	if not (_terminal_alindi and _fener_alindi and _fener_pil_takildi
+			and _kart_alindi and _sigorta_alindi):
+		return
+	_first_task_given = true
+	_proc_step = 7
+	_update_console_prompt()
+	_seq = 3
+	_journal_done("Vardiya başlatma prosedürünü tamamla")
+	_journal_add("Peron katına in, A panosunu kaldır")
+	get_tree().create_timer(1.0).timeout.connect(func() -> void:
+		_rsay("MERKEZ", "Tamam işte. Donandın, resmen teknisyensin artık.")
+		_rsay("MERKEZ",
+				"Hadi, hole çık, merdivenden in aşağı. A panosunu kaldıracaksın. Orası loş, fenerini aç. Halledince haber ver."))
+
+
+## Camli OFIS kapisi: E ile ac/kapa (koridor tarafina doner)
+func _toggle_glass_door() -> void:
+	if _glass_busy or _glass_door == null:
+		return
+	_glass_busy = true
+	_glass_open = not _glass_open
+	var target := deg_to_rad(-115.0) if _glass_open else 0.0
+	var tw := create_tween()
+	tw.set_ease(Tween.EASE_OUT)
+	tw.set_trans(Tween.TRANS_CUBIC)
+	tw.tween_property(_glass_door, "rotation:y", target, 0.8 if _glass_open else 0.65)
+	tw.finished.connect(func() -> void:
+		_glass_busy = false
+		if not _glass_open:
+			_snd_at(load("res://assets/audio/close_door.wav"),
+					_glass_door.position + Vector3(0, 1.2, 0.5), -13.0, 1.25))
+	if _glass_open:
+		_snd_at(load("res://assets/audio/close_door.wav"),
+				_glass_door.position + Vector3(0, 1.2, 0.5), -19.0, 1.4)
+	if _glass_door_body:
+		_glass_door_body.set_meta("prompt",
+				"[E]  KAPIYI KAPAT" if _glass_open else "[E]  KAPIYI AÇ")
+
+
+# ---------------------------------------------------- asansor ses sentezleri
+
+
+
+## Varis clank'i: agir metal oturma + kisa seken tinlama
+func _make_elev_clank() -> AudioStreamWAV:
+	var rate := 16000
+	var n := int(rate * 0.85)
+	var data := PackedByteArray()
+	data.resize(n * 2)
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 23
+	for i in n:
+		var t := float(i) / float(rate)
+		var env := exp(-t * 9.0)
+		var v := 0.7 * env * sin(TAU * 68.0 * t)
+		v += 0.35 * env * sin(TAU * 171.0 * t + 0.4)
+		v += rng.randf_range(-1.0, 1.0) * exp(-t * 30.0) * 0.5
+		# ikinci kucuk oturma (0.22 sn sonra)
+		if t > 0.22:
+			var t2 := t - 0.22
+			v += 0.3 * exp(-t2 * 14.0) * sin(TAU * 92.0 * t2)
+		data.encode_s16(i * 2, int(clampf(v, -1.0, 1.0) * 32767.0))
+	var w := AudioStreamWAV.new()
+	w.format = AudioStreamWAV.FORMAT_16_BITS
+	w.mix_rate = rate
+	w.data = data
+	return w
+
+
+## Panel kayma sesi: surtunme gurultusu kabarir + sonda yumusak oturma
+func _make_elev_slide() -> AudioStreamWAV:
+	var rate := 16000
+	var dur := 1.55
+	var n := int(rate * dur)
+	var data := PackedByteArray()
+	data.resize(n * 2)
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 27
+	var lp := 0.0
+	for i in n:
+		var t := float(i) / float(rate)
+		var ph := clampf(t / 1.45, 0.0, 1.0)
+		var env := sin(ph * PI)                 # kabar-son
+		lp += (rng.randf_range(-1.0, 1.0) - lp) * 0.3
+		var v := lp * env * 0.8
+		v += 0.12 * env * sin(TAU * 54.0 * t)   # ray pesligi
+		if t > 1.42:
+			v += 0.4 * exp(-(t - 1.42) * 40.0) * sin(TAU * 120.0 * (t - 1.42))
+		data.encode_s16(i * 2, int(clampf(v, -1.0, 1.0) * 32767.0))
+	var w := AudioStreamWAV.new()
+	w.format = AudioStreamWAV.FORMAT_16_BITS
+	w.mix_rate = rate
+	w.data = data
+	return w
 
 
 ## Guvenlik kamerasi sistemi (ofisteki bilgisayardan acilir)
@@ -628,7 +1250,7 @@ func _build_cctv() -> void:
 	add_child(c)
 
 
-## Acilis karti: siyah ekran + istasyon adi, yavasca acilir (oyun hissi)
+## Acilis: siyah ekran → kulaklik onerisi → istasyon adi (yavasca acilir)
 func _build_intro() -> void:
 	var cl := CanvasLayer.new()
 	cl.layer = 30
@@ -638,6 +1260,30 @@ func _build_intro() -> void:
 	black.set_anchors_preset(Control.PRESET_FULL_RECT)
 	black.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	cl.add_child(black)
+
+	# --- kulaklik onerisi karti (once gosterilir) ---
+	var hb := VBoxContainer.new()
+	hb.set_anchors_preset(Control.PRESET_CENTER)
+	hb.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	hb.grow_vertical = Control.GROW_DIRECTION_BOTH
+	hb.alignment = BoxContainer.ALIGNMENT_CENTER
+	hb.add_theme_constant_override("separation", 18)
+	black.add_child(hb)
+	var hicon := Label.new()
+	hicon.text = "🎧"
+	hicon.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	hicon.add_theme_font_size_override("font_size", 64)
+	hb.add_child(hicon)
+	var htxt := Label.new()
+	htxt.text = "En iyi deneyim için kulaklıkla oynamanız önerilir."
+	htxt.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	htxt.add_theme_font_override("font", load("res://assets/fonts/Barlow-Medium.ttf"))
+	htxt.add_theme_font_size_override("font_size", 28)
+	htxt.add_theme_color_override("font_color", Color(0.72, 0.76, 0.74))
+	hb.add_child(htxt)
+	hb.modulate.a = 0.0
+
+	# --- istasyon adi karti ---
 	var vb := VBoxContainer.new()
 	vb.set_anchors_preset(Control.PRESET_CENTER)
 	vb.grow_horizontal = Control.GROW_DIRECTION_BOTH
@@ -659,15 +1305,19 @@ func _build_intro() -> void:
 	t2.add_theme_font_size_override("font_size", 26)
 	t2.add_theme_color_override("font_color", Color(0.5, 0.54, 0.52))
 	vb.add_child(t2)
-	t1.modulate.a = 0.0
-	t2.modulate.a = 0.0
+	vb.modulate.a = 0.0
+
 	var tw := create_tween()
-	tw.tween_interval(0.8)
-	tw.tween_property(t1, "modulate:a", 1.0, 1.6)
-	tw.parallel().tween_property(t2, "modulate:a", 1.0, 2.2)
-	tw.tween_interval(3.2)
-	tw.tween_property(vb, "modulate:a", 0.0, 1.4)
-	tw.tween_property(black, "color:a", 0.0, 3.0)
+	# daha hizli acilis (asansor cabuk insin — istege gore kisaltildi)
+	tw.tween_interval(0.5)
+	tw.tween_property(hb, "modulate:a", 1.0, 1.0)   # kulaklik karti
+	tw.tween_interval(1.9)
+	tw.tween_property(hb, "modulate:a", 0.0, 0.8)
+	tw.tween_interval(0.3)
+	tw.tween_property(vb, "modulate:a", 1.0, 1.0)   # HISAR-7 karti
+	tw.tween_interval(1.8)
+	tw.tween_property(vb, "modulate:a", 0.0, 1.0)
+	tw.parallel().tween_property(black, "color:a", 0.0, 2.0)
 	tw.tween_callback(cl.queue_free)
 
 
@@ -682,6 +1332,15 @@ func _process(delta: float) -> void:
 		var pl := get_tree().get_first_node_in_group("player") as Node3D
 		if pl and pl.global_position.distance_to(_yolcu.global_position) < 1.8:
 			_vanish_yolcu()
+	# gerilim muzigi: oyuncu ilk kez peron katina indiginde yavasca girer
+	# ("olur olmadik yerde gerilim sesi olmasin" — asansor/ofis sakin kalir)
+	if not _music_started and _mus != null:
+		var pl2 := get_tree().get_first_node_in_group("player") as Node3D
+		if pl2 and pl2.global_position.y < 0.6:
+			_music_started = true
+			_mus.play()
+			var mtw := create_tween()
+			mtw.tween_property(_mus, "volume_db", -12.0, 7.0)
 	if _tension_inst == null or _post_mat == null:
 		return
 	var mag := _tension_inst.get_magnitude_for_frequency_range(30.0, 2600.0).length()
@@ -771,11 +1430,19 @@ func _make_materials() -> void:
 	mat_pipe.roughness = 0.45
 	_detail(mat_pipe, 3.0, 0.35)
 
-	# boyali beton: portakal kabugu dokusu
-	mat_paint = StandardMaterial3D.new()
-	mat_paint.albedo_color = Color(0.70, 0.72, 0.71)
-	mat_paint.roughness = 0.4
-	_detail(mat_paint, 2.0, 0.5, true)
+	# boyali beton/siva: stucco shader'in ince taneli "boyanmis" varyanti.
+	# (Eski StandardMaterial + noise normal "dandik" ve iri okunuyordu;
+	# prosedurel dunya-uzayi siva lekesi/kiri/AO'suyla gercekci, tiling yok.)
+	mat_paint = ShaderMaterial.new()
+	mat_paint.shader = load("res://shaders/stucco.gdshader")
+	mat_paint.set_shader_parameter("base_color", Vector3(0.66, 0.68, 0.665))
+	mat_paint.set_shader_parameter("blob_scale", 6.0)
+	mat_paint.set_shader_parameter("grit_scale", 90.0)
+	mat_paint.set_shader_parameter("bump_amp", 0.0022)
+	mat_paint.set_shader_parameter("rough_base", 0.62)
+	mat_paint.set_shader_parameter("mottle", 0.3)
+	mat_paint.set_shader_parameter("dirt_amount", 0.4)
+	mat_paint.set_shader_parameter("normal_strength", 0.9)
 
 	mat_nosing = StandardMaterial3D.new()
 	mat_nosing.albedo_color = Color(0.30, 0.31, 0.31)
@@ -957,16 +1624,18 @@ func _build_stairwell() -> void:
 	# ust kat sonu artik duvar degil — turnikeli ust hole acilir (_build_upper_hall)
 
 	# tavanlar: DUZ ve FERAH — egim yok, iki yuksek kademe + boyali gecis bantlari
-	_box(Vector3(W + 0.6, 0.3, 1.35), Vector3(0, CEIL_Y + 0.14, -0.55), mat_stucco, false)
+	# GENISLIK W+0.4: uclar yan duvarin ICINE gomulu (20 cm) ama DIS yuzune
+	# ulasmaz — W+0.6 dis yuz duzlemiyle cakisip z-fight uretiyordu
+	_box(Vector3(W + 0.4, 0.3, 1.35), Vector3(0, CEIL_Y + 0.14, -0.55), mat_stucco, false)
 	# agiz gecis bandi (peron 3.5 -> merdiven 4.35)
-	_box(Vector3(W + 0.6, 1.06, 0.15), Vector3(0, 3.92, -1.13), mat_paint, false)
+	_box(Vector3(W + 0.4, 1.06, 0.15), Vector3(0, 3.92, -1.13), mat_paint, false)
 	# 1. kademe: alt kol + duzluk uzeri duz tavan (4.35)
-	_box(Vector3(W + 0.6, 0.3, 3.25), Vector3(0, 4.5, -2.82), mat_stucco, false)
+	_box(Vector3(W + 0.4, 0.3, 3.25), Vector3(0, 4.5, -2.82), mat_stucco, false)
 	# 2. gecis bandi (4.35 -> 5.75)
-	_box(Vector3(W + 0.6, 1.55, 0.15), Vector3(0, 5.08, -4.47), mat_paint, false)
+	_box(Vector3(W + 0.4, 1.55, 0.15), Vector3(0, 5.08, -4.47), mat_paint, false)
 	# 2. kademe: ust kol uzeri duz tavan (5.75) — hol lentosuna girmeden biter
 	# (lento ile ayni y-duzleminde ustuste binerse titreme olusur)
-	_box(Vector3(W + 0.6, 0.3, 6.16),
+	_box(Vector3(W + 0.4, 0.3, 6.16),
 			Vector3(0, 5.9, -7.5), mat_stucco, false)
 
 
@@ -991,8 +1660,10 @@ func _build_upper_hall() -> void:
 		_box(Vector3(wsw, HALL_H, 0.3),
 				Vector3(side * (HW + wsw * 0.5), cy, z0 + 0.15), mat_white_tile)
 	# koridor agzi ustu lento — alt yuzu merdiven tavanindan 3 cm asagida
-	# (5.75'te es duzlem = titreme)
-	_box(Vector3(W + 0.6, y0 + HALL_H - 5.72, 0.3),
+	# (5.75'te es duzlem = titreme). GENISLIK W: yan duvar parcalari ±HW'de
+	# basladigi icin W+0.6 onlarla AYNI hacmi paylasip on/arka yuzlerde
+	# z-fight uretiyordu; simdi tam ABUT eder
+	_box(Vector3(W, y0 + HALL_H - 5.72, 0.3),
 			Vector3(0, 5.72 + (y0 + HALL_H - 5.72) * 0.5, z0 + 0.15), mat_paint, false)
 
 	# kuzey duvar: kepenkli cikis ortada
@@ -1026,8 +1697,10 @@ func _build_upper_hall() -> void:
 	frm.roughness = 0.5
 	for fz in [dz0, dz1]:
 		_box(Vector3(0.34, 2.14, 0.07), Vector3(-HALL_HW - 0.15, y0 + 1.07, fz), frm, false)
-	_box(Vector3(0.34, 0.07, dz0 - dz1 + 0.07),
-			Vector3(-HALL_HW - 0.15, y0 + 2.135, (dz0 + dz1) * 0.5), frm, false)
+	# baslik alti y0+2.07'de: lento alt yuzuyle (2.1) es duzlem olursa kapi
+	# sovesinde tile/celik z-fight olusur — baslik 3 cm asagi sarkar
+	_box(Vector3(0.34, 0.1, dz0 - dz1 + 0.07),
+			Vector3(-HALL_HW - 0.15, y0 + 2.12, (dz0 + dz1) * 0.5), frm, false)
 	# kapi ustu tabela
 	var olbl := Label3D.new()
 	olbl.text = "TEKNİK SERVİS"
@@ -1044,6 +1717,9 @@ func _build_upper_hall() -> void:
 	shm.metallic = 0.75
 	shm.roughness = 0.45
 	_detail(shm, 2.5, 0.4)
+	# lameller uzun-ince kutular: triplanar olmadan doku yatayda geriliyor
+	shm.uv1_triplanar = true
+	shm.uv1_world_triplanar = true
 	for i in 9:
 		_box(Vector3(shutter_w, 0.265, 0.05 + (0.012 if i % 2 == 0 else 0.0)),
 				Vector3(0, y0 + 0.14 + i * 0.27, HALL_Z1 + 0.03), shm, i == 0)
@@ -1148,8 +1824,11 @@ func _build_upper_hall() -> void:
 		_box(Vector3(0.575, 0.36, 0.575), Vector3(colp.x, y0 + 0.18, colp.z),
 				mat_dark_tile, false)
 	# supurgelik: koyu bant tum duvar diplerinde
-	_box(Vector3(HALL_HW * 2.0, 0.36, 0.012), Vector3(0, y0 + 0.18, z0 - 0.006),
-			mat_dark_tile, false)
+	# (guney duvarda koridor agzi HARIC — bant merdiven girisinden gecmesin)
+	for kside in [-1.0, 1.0]:
+		_box(Vector3(HALL_HW - HW, 0.36, 0.012),
+				Vector3(kside * (HW + (HALL_HW - HW) * 0.5), y0 + 0.18, z0 - 0.006),
+				mat_dark_tile, false)
 	for sside in [-1.0, 1.0]:
 		_box(Vector3(HALL_HW - shutter_w * 0.5, 0.36, 0.012),
 				Vector3(sside * (shutter_w * 0.5 + (HALL_HW - shutter_w * 0.5) * 0.5),
@@ -1169,18 +1848,19 @@ func _build_upper_hall() -> void:
 		_tube(Vector3(-6.3, y0 + HALL_H - 0.16, pz), Vector3(-6.3, y0 + HALL_H + 0.05, pz),
 				0.02, mat_pipe)
 	# aydinlatma: dort saglam, biri titrek, biri olu
-	_fixture(Vector3(-4.2, y0 + HALL_H - 0.08, -14.0), 1.3, Color(0.78, 0.9, 1.0),
-			0.1, 0.9, Vector3(0, -0.35, 0))
-	_fixture(Vector3(4.2, y0 + HALL_H - 0.08, -12.4), 1.25, Color(0.79, 0.9, 1.0),
-			0.08, 0.92, Vector3(0, -0.35, 0))
-	_fixture(Vector3(0.0, y0 + HALL_H - 0.08, -16.6), 1.4, Color(0.78, 0.9, 1.0),
-			0.07, 0.93, Vector3(0, -0.35, 0))
-	_fixture(Vector3(4.2, y0 + HALL_H - 0.08, -18.5), 0.7, Color(0.8, 0.88, 1.0),
-			0.65, 0.25, Vector3(0, -0.35, 0))
-	_fixture(Vector3(-4.2, y0 + HALL_H - 0.08, -20.5), 0.05, Color(0.78, 0.9, 1.0),
-			0.7, 0.1, Vector3(0, -0.35, 0))
-	_fixture(Vector3(0.0, y0 + HALL_H - 0.08, -20.8), 0.9, Color(0.82, 0.88, 1.0),
-			0.3, 0.6, Vector3(0, -0.35, 0))
+	# (hepsi _hall_lights'a girer — anons olayinda duzensiz strobe yapar)
+	_hall_lights.append(_fixture(Vector3(-4.2, y0 + HALL_H - 0.08, -14.0), 1.3,
+			Color(0.78, 0.9, 1.0), 0.1, 0.9, Vector3(0, -0.35, 0)))
+	_hall_lights.append(_fixture(Vector3(4.2, y0 + HALL_H - 0.08, -12.4), 1.25,
+			Color(0.79, 0.9, 1.0), 0.08, 0.92, Vector3(0, -0.35, 0)))
+	_hall_lights.append(_fixture(Vector3(0.0, y0 + HALL_H - 0.08, -16.6), 1.4,
+			Color(0.78, 0.9, 1.0), 0.07, 0.93, Vector3(0, -0.35, 0)))
+	_hall_lights.append(_fixture(Vector3(4.2, y0 + HALL_H - 0.08, -18.5), 0.7,
+			Color(0.8, 0.88, 1.0), 0.65, 0.25, Vector3(0, -0.35, 0)))
+	_hall_lights.append(_fixture(Vector3(-4.2, y0 + HALL_H - 0.08, -20.5), 0.05,
+			Color(0.78, 0.9, 1.0), 0.7, 0.1, Vector3(0, -0.35, 0)))
+	_hall_lights.append(_fixture(Vector3(0.0, y0 + HALL_H - 0.08, -20.8), 0.9,
+			Color(0.82, 0.88, 1.0), 0.3, 0.6, Vector3(0, -0.35, 0)))
 	# istasyon adi: kepenk ustu bandda buyuk harfler
 	var hlbl := Label3D.new()
 	hlbl.text = "H İ S A R — 7"
@@ -1208,33 +1888,48 @@ func _build_upper_hall() -> void:
 			plbl.rotation.y = PI
 		add_child(plbl)
 	# duvar posterleri (kepenk yanlari) + uyari tabelalari
-	_hall_poster(Vector3(-5.6, y0 + 1.72, HALL_Z1 + 0.03), "HAT PLANI\nKARAHAT", Color(0.5, 0.58, 0.5))
-	_hall_poster(Vector3(5.6, y0 + 1.72, HALL_Z1 + 0.03), "SON SEFER\n00:40", Color(0.6, 0.5, 0.42))
+	_hall_poster(Vector3(-5.6, y0 + 1.72, HALL_Z1 + 0.03), "HAT PLANI\nKARAHAT",
+			3, Color(0.24, 0.36, 0.42), Color(0.78, 0.7, 0.28), 2.1)
+	_hall_poster(Vector3(5.6, y0 + 1.72, HALL_Z1 + 0.03), "SON SEFER\n00:40",
+			0, Color(0.66, 0.28, 0.16), Color(0.2, 0.18, 0.14), 4.3)
 	_wall_sign("Sign002", Vector3(-HALL_HW + 0.02, y0 + 1.7, -15.0), 90.0, 0.42)
 	_wall_sign("Sign021", Vector3(HALL_HW - 0.02, y0 + 1.6, -19.0), -90.0, 0.46)
 
 
-## Hol duvar posteri: cerceve + eski kagit + baslik (kuzey duvari, +z yuzu)
-func _hall_poster(pos: Vector3, title: String, tint: Color) -> void:
+## Hol duvar posteri: metal cerceve + prosedurel afis (poster shader) + baslik
+func _hall_poster(pos: Vector3, title: String, layout: int, ink_a: Color,
+		ink_b: Color, seed: float) -> void:
 	var frame := StandardMaterial3D.new()
 	frame.albedo_color = Color(0.14, 0.15, 0.16)
-	frame.metallic = 0.5
-	frame.roughness = 0.45
-	var paper := StandardMaterial3D.new()
-	paper.albedo_color = Color(0.72, 0.7, 0.62)
-	paper.roughness = 0.92
-	var art := StandardMaterial3D.new()
-	art.albedo_color = tint
-	art.roughness = 0.9
-	_box(Vector3(0.86, 1.18, 0.03), pos, frame, false)
-	_box(Vector3(0.78, 1.1, 0.012), pos + Vector3(0, 0, 0.013), paper, false)
-	_box(Vector3(0.68, 0.62, 0.008), pos + Vector3(0, 0.14, 0.021), art, false)
+	frame.metallic = 0.6
+	frame.roughness = 0.4
+	_detail(frame, 3.0, 0.2)
+	_box(Vector3(0.9, 1.22, 0.03), pos, frame, false)
+	var pm := ShaderMaterial.new()
+	pm.shader = load("res://shaders/poster.gdshader")
+	pm.set_shader_parameter("ink_a", ink_a)
+	pm.set_shader_parameter("ink_b", ink_b)
+	pm.set_shader_parameter("paper", Color(0.8, 0.76, 0.64))
+	pm.set_shader_parameter("layout", layout)
+	pm.set_shader_parameter("seed", seed)
+	pm.set_shader_parameter("wear", 0.6)
+	var pq := QuadMesh.new()
+	pq.size = Vector2(0.8, 1.12)
+	var pmi := MeshInstance3D.new()
+	pmi.mesh = pq
+	pmi.material_override = pm
+	pmi.position = pos + Vector3(0, 0, 0.017)
+	pmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(pmi)
 	var t := Label3D.new()
 	t.text = title
-	t.font_size = 22
+	t.font_size = 24
 	t.pixel_size = 0.0012
-	t.modulate = Color(0.22, 0.2, 0.18)
-	t.position = pos + Vector3(0, -0.33, 0.028)
+	t.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	t.modulate = Color(0.9, 0.88, 0.82)
+	t.outline_modulate = Color(0, 0, 0, 0.6)
+	t.outline_size = 4
+	t.position = pos + Vector3(0, -0.42, 0.024)
 	add_child(t)
 
 
@@ -1261,9 +1956,27 @@ func _build_office() -> void:
 			Vector3(cx, y0 - 0.15, czm), mat_floor_tile)
 	_box(Vector3(x1 - x0 + 0.5, 0.3, zz0 - zz1 + 0.5),
 			Vector3(cx, y0 + oh + 0.15, czm), mat_stucco, false)
-	# duvarlar
-	_box(Vector3(0.25, oh, zz0 - zz1 + 0.5),
-			Vector3(x0 - 0.125, y0 + oh * 0.5, czm), mat_owall)          # bati
+	# duvarlar — bati duvari servis koridoruna acilan CAMLI KAPI boslugu ile
+	# (bosluk z -12.25..-13.35, yukseklik 2.1; kapinin kendisi koridor tarafinda)
+	_box(Vector3(0.25, oh, -11.35 - (-12.25)),
+			Vector3(x0 - 0.125, y0 + oh * 0.5, -11.8), mat_owall)        # bati-guney
+	_box(Vector3(0.25, oh, -13.35 - (-16.85)),
+			Vector3(x0 - 0.125, y0 + oh * 0.5, -15.1), mat_owall)        # bati-kuzey
+	_box(Vector3(0.25, oh - 2.1, 1.1),
+			Vector3(x0 - 0.125, y0 + 2.1 + (oh - 2.1) * 0.5, -12.8), mat_owall)  # lento
+	# kapi kasasi (koyu celik, dogu kapisiyla ayni dil)
+	var wfrm := StandardMaterial3D.new()
+	wfrm.albedo_color = Color(0.16, 0.19, 0.2)
+	wfrm.metallic = 0.4
+	wfrm.roughness = 0.5
+	for wfz in [-12.25, -13.35]:
+		_box(Vector3(0.29, 2.14, 0.07), Vector3(x0 - 0.125, y0 + 1.07, wfz), wfrm, false)
+	# baslik 3 cm sarkar — lento alt yuzuyle es duzlem z-fight'i onlenir
+	_box(Vector3(0.29, 0.1, 1.17),
+			Vector3(x0 - 0.125, y0 + 2.12, -12.8), wfrm, false)
+	# esik bandi: koridor betonu ile ofis fayansi gecisi
+	_box(Vector3(0.3, 0.02, 1.1), Vector3(x0 - 0.125, y0 + 0.01, -12.8),
+			mat_dark_tile, false)
 	_box(Vector3(x1 - x0 + 0.5, oh, 0.25),
 			Vector3(cx, y0 + oh * 0.5, zz0 + 0.125), mat_owall)          # guney
 	_box(Vector3(x1 - x0 + 0.5, oh, 0.25),
@@ -1292,11 +2005,11 @@ func _build_office() -> void:
 	add_child(db)
 	_prop("res://assets/models/retro_computer/retro_computer.glb",
 			Vector3(-13.5, y0 + 0.787, -14.5), 90.0, 0.97, true)
-	# bilgisayara etkilesim: E → guvenlik kameralari
+	# konsol etkilesimi: prompt PROSEDUR adimina gore degisir (dock/kamera/cctv)
 	var pcb := StaticBody3D.new()
 	pcb.add_to_group("interactable")
-	pcb.set_meta("prompt", "[E]  GÜVENLİK KAMERALARI")
-	pcb.set_meta("on_interact", Callable(self, "_open_cctv"))
+	pcb.set_meta("prompt", "[E]  KONSOL")
+	pcb.set_meta("on_interact", Callable(self, "_use_console"))
 	var pcc := CollisionShape3D.new()
 	var pcs := BoxShape3D.new()
 	pcs.size = Vector3(0.9, 0.75, 1.0)
@@ -1304,9 +2017,32 @@ func _build_office() -> void:
 	pcc.position = Vector3(-13.45, y0 + 1.2, -14.5)
 	pcb.add_child(pcc)
 	add_child(pcb)
-	# masa basinda koltuk (yuzu masaya donuk)
+	_console_body = pcb
+	# konsol yaninda TERMINAL DOCK: terminal adim 3'te buraya baglanir
+	var dockm := StandardMaterial3D.new()
+	dockm.albedo_color = Color(0.2, 0.22, 0.24)
+	dockm.metallic = 0.6
+	dockm.roughness = 0.4
+	_box(Vector3(0.24, 0.04, 0.2), Vector3(-13.7, y0 + 0.807, -13.75), dockm, false)
+	_dock_pos = Vector3(-13.7, y0 + 0.85, -13.75)
+	# masa basinda koltuk (yuzu masaya/ekrana donuk — batiya bakar)
 	_prop("res://assets/models/GreenChair_01/GreenChair_01.gltf",
-			Vector3(-12.55, y0, -14.5), 90.0, 1.06)
+			Vector3(-12.5, y0, -14.5), -90.0, 1.06)
+	# GOREV GUNLUGU not defteri (CCTV masasi kosesi) — E ile alinir, J aktif olur
+	_prop("res://assets/models/office_notepads/office_notepads.gltf",
+			Vector3(-13.1, y0 + 0.787, -13.7), 100.0, 0.36, true)
+	var jb := StaticBody3D.new()
+	jb.add_to_group("interactable")
+	jb.set_meta("prompt", "[E]  GÜNLÜĞÜ AL")
+	jb.set_meta("on_interact", Callable(self, "_pickup_journal"))
+	var jc := CollisionShape3D.new()
+	var jsh := BoxShape3D.new()
+	jsh.size = Vector3(0.34, 0.3, 0.3)
+	jc.shape = jsh
+	jc.position = Vector3(-13.1, y0 + 0.9, -13.7)
+	jb.add_child(jc)
+	add_child(jb)
+	_pickup_nodes["gunluk"] = [jb]
 
 	# --- zimmet masasi (guney duvari): el terminali + fener buradan alinir ---
 	_prop("res://assets/models/metal_office_desk/metal_office_desk.gltf",
@@ -1319,24 +2055,42 @@ func _build_office() -> void:
 	dc2.position = Vector3(-11.3, y0 + 0.41, -12.15)
 	db2.add_child(dc2)
 	add_child(db2)
-	# alinabilir: EL TERMINALI (masada duruyor; E ile alinir → TAB aktiflesir)
-	var tprop := _prop("res://assets/models/terminal_device/terminal_device.glb",
-			Vector3(-11.05, y0 + 0.787, -12.2), 38.0, 0.4, true)
+	# MASA DUZENI (temiz teknisyen masasi): objeler uc bolgeye ayrilir —
+	#   ARKA (duvara yakin, dekor): telsiz solda, kol lambasi sagda
+	#   ORTA (alinacaklar): terminal + fener, oyuncuya kolay ulasir
+	#   ON (incelenebilir evrak): klipboard + not defteri, istifli
+	# Aciler masaya paralel-ish (hafif varyasyon) — rastgele dagilim yok.
+	var surf := y0 + 0.787
+
+	# EL TERMINALI — ZIMMET MASASINDA durur (konsol/bilgisayarla karismasin diye
+	# ayri masada). Sistem konsoldan senkronlanir; terminal adim 6'da MASADAN
+	# alinir (TAB aktif). Baslangicta sirtustu yatik, ekran yukari.
+	var tprop := Node3D.new()
+	tprop.position = Vector3(-11.5, surf + 0.045, -12.16)
+	tprop.rotation.y = deg_to_rad(8.0)
+	var tdev: Node3D = (load("res://assets/models/terminal_device/terminal_device.glb")
+			as PackedScene).instantiate()
+	tdev.scale = Vector3.ONE * 1.05
+	tdev.rotation.x = -PI * 0.5           # sirtustu yatik
+	tprop.add_child(tdev)
+	add_child(tprop)
+	_tprop_node = tprop
+	# adim 6'da alinabilir (oncesinde "sirasi degil")
 	var tpick := StaticBody3D.new()
 	tpick.add_to_group("interactable")
 	tpick.set_meta("prompt", "[E]  TERMİNALİ AL")
-	tpick.set_meta("on_interact", Callable(self, "_pickup_terminal"))
+	tpick.set_meta("on_interact", Callable(self, "_take_terminal_from_desk"))
 	var tpc := CollisionShape3D.new()
 	var tps := BoxShape3D.new()
-	tps.size = Vector3(0.45, 0.4, 0.45)
+	tps.size = Vector3(0.42, 0.24, 0.42)
 	tpc.shape = tps
-	tpc.position = Vector3(-11.05, y0 + 0.95, -12.2)
+	tpc.position = Vector3(-11.5, y0 + 0.9, -12.16)
 	tpick.add_child(tpc)
 	add_child(tpick)
 	_pickup_nodes["terminal"] = [tprop, tpick]
-	# alinabilir: EL FENERI (E ile alinir → F aktiflesir)
+	# EL FENERI (orta sag) — adim 6'da alinir (_pickup_flashlight adim kontrollu)
 	var fprop := _prop("res://assets/models/vintage_flashlight/vintage_flashlight.gltf",
-			Vector3(-11.75, y0 + 0.787, -12.2), -35.0, 0.305, true)
+			Vector3(-10.85, surf, -12.15), 16.0, 0.305, true)
 	var fpick := StaticBody3D.new()
 	fpick.add_to_group("interactable")
 	fpick.set_meta("prompt", "[E]  FENERİ AL")
@@ -1345,27 +2099,42 @@ func _build_office() -> void:
 	var fps := BoxShape3D.new()
 	fps.size = Vector3(0.4, 0.35, 0.4)
 	fpc.shape = fps
-	fpc.position = Vector3(-11.75, y0 + 0.92, -12.2)
+	fpc.position = Vector3(-10.85, y0 + 0.92, -12.15)
 	fpick.add_child(fpc)
 	add_child(fpick)
 	_pickup_nodes["fener"] = [fprop, fpick]
-	# masa ustu duzeni: telsiz cihazi solda, kol lambasi arkada masaya donuk
-	_prop("res://assets/models/vintage_radio_transceiver/vintage_radio_transceiver.gltf",
-			Vector3(-10.45, y0 + 0.787, -12.25), 205.0, 0.62, true)
+	# ARKA dekor (duvara yakin): telsiz sol (kadran oyuncuya donuk), lamba sag
+	_desk_radio(Vector3(-11.95, surf, -11.9), 180.0, 0.34)
 	_prop("res://assets/models/desk_lamp_arm_01/desk_lamp_arm_01.gltf",
-			Vector3(-12.05, y0 + 0.787, -11.95), 185.0, 0.89, true)
-	_prop("res://assets/models/office_notepads/office_notepads.gltf",
-			Vector3(-10.95, y0 + 0.787, -12.5), 96.0, 0.5, true)
+			Vector3(-10.6, surf, -11.85), 205.0, 0.82, true)
+	# ON evrak (oyuncuya yakin, masa icinde): klipboard sol, not defteri sag
 	_prop("res://assets/models/clipboard/clipboard.gltf",
-			Vector3(-11.5, y0 + 0.787, -12.55), 14.0, 0.34, true)
-	# masa lambasi isigi: masanin USTUNE duser (acisi duzeltildi)
+			Vector3(-11.75, surf, -12.36), -6.0, 0.32, true)
+	_prop("res://assets/models/office_notepads/office_notepads.gltf",
+			Vector3(-10.85, surf, -12.4), 8.0, 0.38, true)
+	# --- incelenebilir lore objeleri (E ile ekrana gelir, dondurulur) ---
+	# vardiya cizelgesi (klipboard): bu gece tek isim — Kaya
+	_examine_body(Vector3(-11.75, y0 + 0.83, -12.36), Vector3(0.34, 0.14, 0.3),
+			"[E]  VARDİYA ÇİZELGESİNE BAK",
+			"res://assets/models/clipboard/clipboard.gltf",
+			"VARDİYA ÇİZELGESİ",
+			"Bu gece listede tek isim var. Benimki. Koca istasyon, bir tek ben. Ne cömert vardiya ama.")
+	# bakim defteri (not defteri): son kayit cok eski
+	_examine_body(Vector3(-10.85, y0 + 0.83, -12.4), Vector3(0.3, 0.14, 0.28),
+			"[E]  BAKIM DEFTERİNE BAK",
+			"res://assets/models/office_notepads/office_notepads.gltf",
+			"BAKIM DEFTERİ",
+			"Son kayıt yıllar öncesinden. Demek o günden beri kimse inmemiş buraya. Hiç kimse.")
+	# masa lambasi isigi: masanin ortasi ustune sicak dusum (salterle yanar)
 	var dl := OmniLight3D.new()
 	dl.light_color = Color(1.0, 0.76, 0.46)
 	dl.light_energy = 0.9
 	dl.omni_range = 2.4
 	dl.shadow_enabled = true
-	dl.position = Vector3(-11.6, y0 + 1.25, -12.35)
+	dl.visible = false                   # ofis karanlik baslar; adim 2 salteri acar
+	dl.position = Vector3(-11.3, y0 + 1.2, -12.25)
 	add_child(dl)
+	_office_desk_lamp = dl
 
 	# --- kuzey duvari: kitaplik + cekmeceli dolap (ferah yerlesim) ---
 	_prop("res://assets/models/wooden_bookshelf_worn/wooden_bookshelf_worn.gltf",
@@ -1388,8 +2157,62 @@ func _build_office() -> void:
 	cc.position = Vector3(-11.35, y0 + 0.95, -16.35)
 	cb.add_child(cc)
 	add_child(cb)
+	# su isiticisi UST RAFA oturur (raf yuzeyi 1.74 — AABB tepesi 1.88 degil;
+	# eski deger isiticiyi havada birakiyordu). Incelenebilir: "termos" lore
 	_prop("res://assets/models/vintage_electric_kettle/vintage_electric_kettle.gltf",
-			Vector3(-11.35, y0 + 1.885, -16.32), 70.0, 0.32, true)
+			Vector3(-11.35, y0 + 1.745, -16.32), 70.0, 0.32, true)
+	_examine_body(Vector3(-11.35, y0 + 1.9, -16.32), Vector3(0.3, 0.32, 0.3),
+			"[E]  TERMOSA BAK",
+			"res://assets/models/vintage_electric_kettle/vintage_electric_kettle.gltf",
+			"TERMOS",
+			"Soğumuş. Tabii ki soğumuş. Kim bilir kaç vardiya önce doldurdular bunu.")
+	# olculmus raf (1.42) bos/kel duruyordu: koli (yasanmislik)
+	_prop("res://assets/models/cardboard_box_01/cardboard_box_01.gltf",
+			Vector3(-11.6, y0 + 1.425, -16.35), 40.0, 0.38, true)
+	# --- ADIM 6 malzemeleri ---
+	# YEDEK PIL: ZIMMET MASASINDA (terminalin solu — hepsi bir arada, istege gore).
+	# sari-siyah endustriyel batarya (belirgin, kolay bulunur)
+	var psurf := y0 + 0.787
+	var ppos := Vector3(-12.15, psurf + 0.055, -12.3)
+	var baty := StandardMaterial3D.new()      # sari govde
+	baty.albedo_color = Color(0.86, 0.68, 0.1)
+	baty.metallic = 0.2
+	baty.roughness = 0.5
+	var batk := StandardMaterial3D.new()      # koyu uclar/etiket
+	batk.albedo_color = Color(0.12, 0.12, 0.13)
+	batk.metallic = 0.4
+	batk.roughness = 0.5
+	var batmi := _box(Vector3(0.2, 0.11, 0.11), ppos, baty, false)
+	_box(Vector3(0.04, 0.13, 0.13), ppos + Vector3(-0.1, 0, 0), batk, false)  # sol uc
+	_box(Vector3(0.21, 0.035, 0.11), ppos + Vector3(0, 0.06, 0), batk, false) # ust bant
+	var batb := StaticBody3D.new()
+	batb.add_to_group("interactable")
+	batb.set_meta("prompt", "[E]  YEDEK PİLİ AL")
+	batb.set_meta("on_interact", Callable(self, "_pickup_battery"))
+	var batc := CollisionShape3D.new()
+	var bats := BoxShape3D.new()
+	bats.size = Vector3(0.34, 0.26, 0.26)
+	batc.shape = bats
+	batc.position = ppos + Vector3(0, 0.03, 0)
+	batb.add_child(batc)
+	add_child(batb)
+	_pickup_nodes["pil"] = [batmi, batb]
+	# MALZEME: paslanmis teneke (kart + yedek sigorta) — dolap onunde
+	var dfz := -16.12
+	var suppmi := _prop("res://assets/models/can_rusted/can_rusted.gltf",
+			Vector3(-11.25, y0 + 1.74, dfz), 15.0, 0.18, true)
+	var suppb := StaticBody3D.new()
+	suppb.add_to_group("interactable")
+	suppb.set_meta("prompt", "[E]  KART VE YEDEK SİGORTAYI AL")
+	suppb.set_meta("on_interact", Callable(self, "_pickup_supplies"))
+	var suppc := CollisionShape3D.new()
+	var supps := BoxShape3D.new()
+	supps.size = Vector3(0.32, 0.32, 0.32)
+	suppc.shape = supps
+	suppc.position = Vector3(-11.25, y0 + 1.85, dfz)
+	suppb.add_child(suppc)
+	add_child(suppb)
+	_pickup_nodes["malzeme"] = [suppmi, suppb]
 	# kose: plastik yedek sandalye + koliler + yangin tupu
 	_prop("res://assets/models/plastic_monobloc_chair_01/plastic_monobloc_chair_01.gltf",
 			Vector3(-9.45, y0, -16.05), 205.0, 0.88)
@@ -1401,8 +2224,9 @@ func _build_office() -> void:
 			Vector3(-9.05, y0, -12.1), 135.0, 0.66)
 
 	# --- duvar saati (bati duvari, CCTV masasinin ustu): 03:47'de durmus ---
+	# (bati kapi boslugu acilinca kuzeye kaydirildi — masanin tam ustu)
 	var oclk := _prop("res://assets/models/clock/basic_clock_rigged.glb",
-			Vector3(-13.93, y0 + 2.15, -13.4), 0.0, 0.32, false)
+			Vector3(-13.93, y0 + 2.15, -14.5), 0.0, 0.32, false)
 	if oclk:
 		_set_clock_time(oclk, 3, 47)
 
@@ -1441,17 +2265,96 @@ func _build_office() -> void:
 	note2.rotation.z = deg_to_rad(4.0)
 	add_child(note2)
 
-	# --- kapi: hole acilan celik kapi, ACIK durur (ic duvara yasli) ---
+	# --- kapi: hole acilan celik kapi — MENTESELI, PANELLI govde ---
+	# pivot kuzey sovede, oda ic yuzunun hemen icinde (duvara girmeden doner);
+	# kapali: kanat acikligi oda tarafindan orter; acik: odaya dogru ~150 derece
+	# malzeme: ince taneli boyali celik (iri lekeli eski normal map "dandik"
+	# okunuyordu — 4.0/0.06 sik ve zayif doku, saten puruz)
 	var doorm := StandardMaterial3D.new()
-	doorm.albedo_color = Color(0.34, 0.37, 0.39)
-	doorm.metallic = 0.45
-	doorm.roughness = 0.42
-	_detail(doorm, 1.2, 0.12)
-	var leaf := _box(Vector3(0.055, 2.06, 1.04), Vector3(-8.87, y0 + 1.03, -14.16),
-			doorm, true)
-	# kol
-	_box(Vector3(0.03, 0.03, 0.16), Vector3(-8.905, y0 + 1.05, -13.75), mat_steel_rail, false)
-	leaf.rotation.y = deg_to_rad(-4.0)
+	doorm.albedo_color = Color(0.4, 0.43, 0.45)
+	doorm.metallic = 0.3
+	doorm.roughness = 0.52
+	_detail(doorm, 4.0, 0.06)
+	var doord := StandardMaterial3D.new()    # koyu aksan (panel citasi, tekmelik)
+	doord.albedo_color = Color(0.21, 0.24, 0.26)
+	doord.metallic = 0.4
+	doord.roughness = 0.48
+	_detail(doord, 4.0, 0.06)
+	_office_door = Node3D.new()
+	_office_door.position = Vector3(-8.84, y0, -13.57)
+	_office_door.rotation.y = 0.0                     # oyun KAPALI kapiyla baslar
+	add_child(_office_door)
+	var leaf := MeshInstance3D.new()
+	var leafm := BoxMesh.new()
+	leafm.size = Vector3(0.045, 2.06, 1.04)
+	leaf.mesh = leafm
+	leaf.material_override = doorm
+	leaf.position = Vector3(0, 1.03, 0.52)
+	_office_door.add_child(leaf)
+	# iki yuzde panel gorunumu: iki kabartma panel plakasi + tekmelik
+	for dface in [-1.0, 1.0]:
+		var fx2: float = dface * 0.0285
+		for pnl2 in [[1.48, 0.78, 0.86], [0.62, 0.72, 0.8]]:
+			var pp := MeshInstance3D.new()
+			var ppm := BoxMesh.new()
+			ppm.size = Vector3(0.012, pnl2[1], pnl2[2])
+			pp.mesh = ppm
+			pp.material_override = doorm
+			pp.position = Vector3(fx2, pnl2[0], 0.52)
+			_office_door.add_child(pp)
+			# panel cevre citasi (koyu, ince)
+			var pfr := MeshInstance3D.new()
+			var pfm := BoxMesh.new()
+			pfm.size = Vector3(0.008, pnl2[1] + 0.05, pnl2[2] + 0.05)
+			pfr.mesh = pfm
+			pfr.material_override = doord
+			pfr.position = Vector3(dface * 0.0245, pnl2[0], 0.52)
+			_office_door.add_child(pfr)
+		# tekmelik (alt koyu plaka)
+		var kick := MeshInstance3D.new()
+		var kickm := BoxMesh.new()
+		kickm.size = Vector3(0.01, 0.22, 1.0)
+		kick.mesh = kickm
+		kick.material_override = doord
+		kick.position = Vector3(fx2, 0.115, 0.52)
+		_office_door.add_child(kick)
+	# menteseler (hol tarafinda gorunur, pivot kenari)
+	for hy in [0.3, 1.03, 1.76]:
+		var hng := MeshInstance3D.new()
+		var hngm := BoxMesh.new()
+		hngm.size = Vector3(0.06, 0.12, 0.025)
+		hng.mesh = hngm
+		hng.material_override = mat_steel_rail
+		hng.position = Vector3(0, hy, 0.02)
+		_office_door.add_child(hng)
+	# kol: plaka + L kol, iki yuzde de
+	for kx in [-0.045, 0.045]:
+		var kplate := MeshInstance3D.new()
+		var kpm := BoxMesh.new()
+		kpm.size = Vector3(0.012, 0.24, 0.06)
+		kplate.mesh = kpm
+		kplate.material_override = doord
+		kplate.position = Vector3(kx * 0.72, 1.05, 0.9)
+		_office_door.add_child(kplate)
+		var knob := MeshInstance3D.new()
+		var knobm := BoxMesh.new()
+		knobm.size = Vector3(0.024, 0.024, 0.15)
+		knob.mesh = knobm
+		knob.material_override = mat_steel_rail
+		knob.position = Vector3(kx, 1.05, 0.86)
+		_office_door.add_child(knob)
+	# carpisma + etkilesim (kanatla birlikte doner)
+	_office_door_body = StaticBody3D.new()
+	_office_door_body.add_to_group("interactable")
+	_office_door_body.set_meta("prompt", "[E]  KAPIYI AÇ")   # kapali baslar
+	_office_door_body.set_meta("on_interact", Callable(self, "_toggle_office_door"))
+	var doorc := CollisionShape3D.new()
+	var doorsh := BoxShape3D.new()
+	doorsh.size = Vector3(0.08, 2.06, 1.04)
+	doorc.shape = doorsh
+	doorc.position = Vector3(0, 1.03, 0.52)
+	_office_door_body.add_child(doorc)
+	_office_door.add_child(_office_door_body)
 	# STAFF ONLY plakasi (hol tarafi, kapinin yani)
 	var plate := StandardMaterial3D.new()
 	plate.albedo_color = Color(0.85, 0.83, 0.78)
@@ -1475,34 +2378,273 @@ func _build_office() -> void:
 	add_child(so2)
 
 	# --- aydinlatma: iki sicak armatur (vadi — nefes alani) ---
-	_fixture(Vector3(-11.0, y0 + oh - 0.08, -13.6), 1.5, Color(1.0, 0.88, 0.66),
-			0.05, 0.96, Vector3(0, -0.3, 0))
-	_fixture(Vector3(-13.2, y0 + oh - 0.08, -15.3), 0.7, Color(1.0, 0.85, 0.6),
-			0.25, 0.7, Vector3(0, -0.3, 0))
+	# VARDIYA PROSEDURU: ofis KARANLIK baslar; ana armaturler adim 2 (ana salter)
+	# ile canlanir. Baslangicta yalniz los acil aydinlatma yanar.
+	_office_lights.append(_fixture(Vector3(-11.0, y0 + oh - 0.08, -13.6), 1.5,
+			Color(1.0, 0.88, 0.66), 0.05, 0.96, Vector3(0, -0.3, 0)))
+	_office_lights.append(_fixture(Vector3(-13.2, y0 + oh - 0.08, -15.3), 0.7,
+			Color(1.0, 0.85, 0.6), 0.25, 0.7, Vector3(0, -0.3, 0)))
+	for ol in _office_lights:
+		(ol as Node).set("blackout", true)
+	# acil aydinlatma: los ama panolari/defteri bulacak kadar gorunur (gece isigi).
+	# iki kaynak — tavan ortasi + giris/pano tarafi (guney-bati) ki oyuncu ilk
+	# adimlari karanlikta aramasin
+	_office_emergency = OmniLight3D.new()
+	_office_emergency.light_color = Color(0.95, 0.55, 0.42)
+	_office_emergency.light_energy = 1.1
+	_office_emergency.omni_range = 8.5
+	_office_emergency.position = Vector3(cx, y0 + oh - 0.2, czm)
+	add_child(_office_emergency)
+	# giris/pano tarafina ikinci los kaynak (guney-bati kose)
+	_office_emergency2 = OmniLight3D.new()
+	_office_emergency2.light_color = Color(0.95, 0.55, 0.42)
+	_office_emergency2.light_energy = 0.9
+	_office_emergency2.omni_range = 6.0
+	_office_emergency2.position = Vector3(-12.4, y0 + 1.9, -12.0)
+	add_child(_office_emergency2)
+
+	_build_ledger(y0)
+	_build_office_switch(y0)
+	_build_office_lore(y0)
+
+
+## Bir duvar/obje noktasi: E ile bakinca Kaya bir sey soyler (opsiyonel lore).
+## Model inceleme yok — kisa, atmosferik yorum. (Meraklı oyuncuyu odullendirir.)
+func _lore_spot(pos: Vector3, size: Vector3, prompt: String, line: String) -> void:
+	var b := StaticBody3D.new()
+	b.add_to_group("interactable")
+	b.set_meta("prompt", prompt)
+	b.set_meta("on_interact", func() -> void:
+		_rsay("BEN", line))
+	var c := CollisionShape3D.new()
+	var bs := BoxShape3D.new()
+	bs.size = size
+	c.shape = bs
+	c.position = pos
+	b.add_child(c)
+	add_child(b)
+
+
+## Opsiyonel ofis lore objeleri: gazete kupuru + duvar takvimi (Sekans 2 derinlik)
+func _build_office_lore(y0: float) -> void:
+	# --- cerceveli gazete kupuru (guney duvar, panonun solu): kapanis haberi ---
+	var zf := -11.6 + 0.02
+	var frm := StandardMaterial3D.new()
+	frm.albedo_color = Color(0.24, 0.22, 0.2)
+	frm.metallic = 0.3
+	frm.roughness = 0.5
+	_box(Vector3(0.62, 0.5, 0.02), Vector3(-11.0, y0 + 1.55, zf), frm, false)
+	var news := ShaderMaterial.new()
+	news.shader = load("res://shaders/poster.gdshader")
+	news.set_shader_parameter("ink_a", Color(0.22, 0.22, 0.22))
+	news.set_shader_parameter("ink_b", Color(0.12, 0.12, 0.12))
+	news.set_shader_parameter("paper", Color(0.74, 0.71, 0.62))
+	news.set_shader_parameter("layout", 2)
+	news.set_shader_parameter("seed", 5.2)
+	news.set_shader_parameter("wear", 0.7)
+	var nq := QuadMesh.new()
+	nq.size = Vector2(0.56, 0.44)
+	var nmi := MeshInstance3D.new()
+	nmi.mesh = nq
+	nmi.material_override = news
+	nmi.position = Vector3(-11.0, y0 + 1.55, zf + 0.012)
+	nmi.rotation.y = PI
+	nmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(nmi)
+	var ntl := Label3D.new()
+	ntl.text = "İSTASYON KAPATILIYOR"
+	ntl.font_size = 15
+	ntl.pixel_size = 0.001
+	ntl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	ntl.modulate = Color(0.12, 0.12, 0.12)
+	ntl.position = Vector3(-11.0, y0 + 1.68, zf + 0.02)
+	ntl.rotation.y = PI
+	add_child(ntl)
+	_lore_spot(Vector3(-11.0, y0 + 1.55, zf + 0.05), Vector3(0.62, 0.5, 0.12),
+			"[E]  GAZETE KUPÜRÜNE BAK",
+			"Demek buymuş o iş... 'zemin oturması, tahliye.' İki satırla geçmişler, o kadar.")
+
+	# --- duvar takvimi (kuzey duvar): bir tarih daire icine alinmis ---
+	var zk := -16.6 - 0.02
+	var calm := StandardMaterial3D.new()
+	calm.albedo_color = Color(0.82, 0.8, 0.74)
+	calm.roughness = 0.7
+	_box(Vector3(0.42, 0.56, 0.02), Vector3(-9.7, y0 + 1.6, zk), calm, false)
+	var chead := Label3D.new()
+	chead.text = "TEMMUZ"
+	chead.font_size = 20
+	chead.pixel_size = 0.0011
+	chead.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	chead.modulate = Color(0.5, 0.2, 0.18)
+	chead.position = Vector3(-9.7, y0 + 1.78, zk - 0.012)
+	add_child(chead)
+	var cgrid := Label3D.new()
+	cgrid.text = "· · · · · · ·\n· · ⊘ · · · ·\n· · · · · · ·\n· · · · · · ·"
+	cgrid.font_size = 14
+	cgrid.pixel_size = 0.001
+	cgrid.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	cgrid.modulate = Color(0.2, 0.22, 0.24)
+	cgrid.position = Vector3(-9.7, y0 + 1.55, zk - 0.012)
+	add_child(cgrid)
+	_lore_spot(Vector3(-9.7, y0 + 1.6, zk - 0.06), Vector3(0.42, 0.56, 0.12),
+			"[E]  TAKVİME BAK",
+			"Bir gün daire içine alınmış. Kim işaretlemiş, ne anlama geliyor, belli değil.")
+
+
+## Opsiyonel GIRIS DEFTERI: bati (giris) kapisinin yaninda, sehpa ustunde.
+func _build_ledger(y0: float) -> void:
+	# kucuk metal sehpa (defter altligi), bati duvar dibinde
+	var st := StandardMaterial3D.new()
+	st.albedo_color = Color(0.28, 0.3, 0.32)
+	st.metallic = 0.6
+	st.roughness = 0.4
+	_box(Vector3(0.5, 0.02, 0.4), Vector3(-13.55, y0 + 0.92, -11.95), st, true)
+	for lx in [-13.75, -13.35]:
+		for lz in [-12.1, -11.8]:
+			_box(Vector3(0.03, 0.92, 0.03), Vector3(lx, y0 + 0.46, lz), st, false)
+	# acik defter (kutulardan — office_notepads modeli izgara gibi bozuk okunuyordu):
+	# koyu cilt + iki hafif V beyaz sayfa + kalem
+	var bookc := StandardMaterial3D.new()
+	bookc.albedo_color = Color(0.22, 0.14, 0.1)      # deri cilt
+	bookc.roughness = 0.6
+	var page := StandardMaterial3D.new()
+	page.albedo_color = Color(0.82, 0.8, 0.74)
+	page.roughness = 0.9
+	var bx := -13.55
+	var bz := -11.95
+	# cilt (acik, hafif egik zemin)
+	var cover := _box(Vector3(0.42, 0.03, 0.3), Vector3(bx, y0 + 0.945, bz), bookc, false)
+	cover.rotation.y = deg_to_rad(8.0)
+	# sol + sag sayfa (V acilim)
+	for sside in [-1.0, 1.0]:
+		var pg := _box(Vector3(0.2, 0.012, 0.28),
+				Vector3(bx + sside * 0.105, y0 + 0.965, bz), page, false)
+		pg.rotation = Vector3(0, deg_to_rad(8.0), deg_to_rad(-sside * 4.0))
+	# kalem (koyu ince, sag sayfa uzeri capraz)
+	var penm := StandardMaterial3D.new()
+	penm.albedo_color = Color(0.1, 0.11, 0.13)
+	penm.metallic = 0.5
+	penm.roughness = 0.4
+	var pen := _box(Vector3(0.012, 0.012, 0.18), Vector3(bx + 0.08, y0 + 0.975, bz), penm, false)
+	pen.rotation.y = deg_to_rad(38.0)
+	# etkilesim: opsiyonel imza (lore — akista zorunlu degil)
+	var lb := StaticBody3D.new()
+	lb.add_to_group("interactable")
+	lb.set_meta("prompt", "[E]  GİRİŞ DEFTERİNİ İMZALA")
+	lb.set_meta("on_interact", Callable(self, "_sign_ledger"))
+	var lc := CollisionShape3D.new()
+	var ls := BoxShape3D.new()
+	ls.size = Vector3(0.5, 0.4, 0.4)
+	lc.shape = ls
+	lc.position = Vector3(-13.55, y0 + 1.1, -11.95)
+	lb.add_child(lc)
+	add_child(lb)
+	# kucuk levha "GİRİŞ DEFTERİ"
+	var sgn := Label3D.new()
+	sgn.text = "GİRİŞ DEFTERİ"
+	sgn.font_size = 15
+	sgn.pixel_size = 0.001
+	sgn.modulate = Color(0.6, 0.62, 0.6)
+	sgn.position = Vector3(-13.86, y0 + 1.45, -11.95)
+	sgn.rotation.y = deg_to_rad(90.0)
+	add_child(sgn)
+
+
+## ADIM 2 — GIRIS DEFTERI: imza (kimlik rituali + gecmis), sonra konsola yonlendir.
+## Salterden ONCE imzaya basilirsa "once isiklari ver" der.
+func _sign_ledger() -> void:
+	if _ledger_signed:
+		return
+	if _proc_step < 2:
+		_rsay("MERKEZ", "Dur bakalım. Önce şu ana şalteri kaldır, ışıklar gelsin.")
+		return
+	_ledger_signed = true
+	_snd_at(load("res://assets/audio/close_door.wav"),
+			Vector3(-13.5, TOP_Y + 0.9, -12.2), -22.0, 1.6)   # kalem/kagit hissi
+	get_tree().create_timer(0.6).timeout.connect(func() -> void:
+		_rsay("BEN", "Son imza on iki yıl öncesinden... Demek o günden beri kimse inmemiş buraya.")
+		_rsay("MERKEZ", "İmzaladın mı? Hadi konsola geç, sistemi bir senkronlayalım.")
+		_proc_step = 3
+		_update_console_prompt())
+
+
+## ADIM 1 — ANA PANO: gercek elektrik panosu modeli (peronla ayni kit), guney
+## duvarda kapiya yakin. Yapay kol/LED yok — sade etkilesim (E ile ac).
+func _build_office_switch(y0: float) -> void:
+	# electrical_boxes.glb "modular-box-01" — duvara monte, on yuz odaya (-z) bakar.
+	# TEK parca (ikinci buat ic ice geciyordu — kaldirildi).
+	_prop_named("res://assets/models/electrical_boxes/electrical_boxes.glb",
+			"modular-box-01", Vector3(-12.7, y0 + 1.4, -11.68), 90.0)
+	# etkilesim govdesi (panonun onu)
+	var sb := StaticBody3D.new()
+	sb.add_to_group("interactable")
+	sb.set_meta("prompt", "[E]  ANA ŞALTERİ AÇ")
+	sb.set_meta("on_interact", Callable(self, "_office_main_switch"))
+	var sc := CollisionShape3D.new()
+	var ss := BoxShape3D.new()
+	ss.size = Vector3(0.5, 0.6, 0.35)
+	sc.shape = ss
+	sc.position = Vector3(-12.7, y0 + 1.35, -11.82)
+	sb.add_child(sc)
+	add_child(sb)
+	var sgn := Label3D.new()
+	sgn.text = "ANA PANO"
+	sgn.font_size = 14
+	sgn.pixel_size = 0.001
+	sgn.modulate = Color(0.75, 0.6, 0.4)
+	sgn.position = Vector3(-12.7, y0 + 1.78, -11.72)
+	sgn.rotation.y = PI
+	add_child(sgn)
+
+
+## Zimmet masasi telsizi: transceiver setinin YALNIZ govdesi (mikrofon, mors
+## anahtari, kablolar vb. dagitik parcalar atilir), masaya duz yatik oturtulur.
+func _desk_radio(pos: Vector3, yaw_deg: float, target: float) -> void:
+	var ps: PackedScene = load(
+			"res://assets/models/vintage_radio_transceiver/vintage_radio_transceiver.gltf")
+	if ps == null:
+		return
+	var src: Node3D = ps.instantiate()
+	var found: Array = []   # [MeshInstance3D, Transform3D]
+	_collect_meshes(src, Transform3D.IDENTITY, "vintage_radio_transceiver", found)
+	var sel: Array = []
+	for f in found:
+		if str((f[0] as Node).name) == "vintage_radio_transceiver":
+			sel.append(f)
+	if sel.is_empty():
+		src.queue_free()
+		return
+	var aabb: AABB = (sel[0][1] as Transform3D) * (sel[0][0] as MeshInstance3D).get_aabb()
+	for i in range(1, sel.size()):
+		aabb = aabb.merge((sel[i][1] as Transform3D) * (sel[i][0] as MeshInstance3D).get_aabb())
+	var holder := Node3D.new()
+	holder.position = pos
+	holder.rotation.y = deg_to_rad(yaw_deg)
+	# olcek en genis TABAN boyutuna gore (govde zaten yatik durur, en kisa ekseni y)
+	var s := target / maxf(maxf(aabb.size.x, aabb.size.z), 0.001)
+	var inner := Node3D.new()
+	inner.scale = Vector3.ONE * s
+	var c := aabb.get_center()
+	inner.position = Vector3(-c.x * s, -aabb.position.y * s, -c.z * s)
+	holder.add_child(inner)
+	for f in sel:
+		var dup: MeshInstance3D = (f[0] as MeshInstance3D).duplicate()
+		dup.transform = f[1]
+		inner.add_child(dup)
+	src.queue_free()
+	add_child(holder)
 
 
 var _pickup_nodes := {}          # "terminal"/"fener" -> [prop, etkilesim govdesi]
 
 
-## Zimmet masasindan terminali al: TAB aktiflesir
-func _pickup_terminal() -> void:
-	if not _pickup_nodes.has("terminal"):
-		return
-	for n in _pickup_nodes["terminal"]:
-		if is_instance_valid(n):
-			(n as Node).queue_free()
-	_pickup_nodes.erase("terminal")
-	var term := get_tree().get_first_node_in_group("terminal")
-	if term:
-		term.set("acquired", true)
-	var r := get_tree().get_first_node_in_group("radio")
-	if r:
-		r.call("say", "MERKEZ", "Terminal sende mi? TAB ile aç. Batarya zimmetli, idareli kullan.", 5.5)
-
-
-## Zimmet masasindan feneri al: F aktiflesir
+## Adim 6 — FENER: alinir ama isigi CILIZ (pili olmus). Dolaptan pil takilinca
+## guclenir. (Fener bir "tell" araci — anomaliye yaklasinca kisilir/titrer.)
 func _pickup_flashlight() -> void:
-	if not _pickup_nodes.has("fener"):
+	if _proc_step < 6:
+		_rsay("BEN", "Daha sırası değil. Şu prosedürü bir bitireyim önce.")
+		return
+	if _fener_alindi or not _pickup_nodes.has("fener"):
 		return
 	for n in _pickup_nodes["fener"]:
 		if is_instance_valid(n):
@@ -1511,12 +2653,350 @@ func _pickup_flashlight() -> void:
 	var p := get_tree().get_first_node_in_group("player")
 	if p:
 		p.set("has_flashlight", true)
+		p.call("set_flashlight_power", false)   # ciliz — pil bekliyor
+	_fener_alindi = true
+	_rsay("MERKEZ", "Fener elinde ama ışığı cılız. Pili ölmüş. Dolapta yedek vardı, tak onu.")
+	_equip_progress()
+	_check_equipment_done()
+
+
+## ADIM 6 — PIL: dolaptan alinir, fener guclenir
+func _pickup_battery() -> void:
+	if _proc_step < 6 or _fener_pil_takildi:
+		return
+	if not _fener_alindi:
+		_rsay("BEN", "Önce feneri bir alayım.")
+		return
+	_fener_pil_takildi = true
+	if _pickup_nodes.has("pil"):
+		for n in _pickup_nodes["pil"]:
+			if is_instance_valid(n):
+				(n as Node).queue_free()
+		_pickup_nodes.erase("pil")
+	var p := get_tree().get_first_node_in_group("player")
+	if p:
+		p.call("set_flashlight_power", true)    # tam guc
+	_rsay("MERKEZ", "Hah, şimdi oldu. F ile yakıp söndürürsün. Boş yere yakma pilini.")
+	_equip_progress()
+	_check_equipment_done()
+
+
+## ADIM 6 — KART + YEDEK SIGORTA: dolaptan alinir (kilitli kapilar + peron isi)
+func _pickup_supplies() -> void:
+	if _proc_step < 6 or (_kart_alindi and _sigorta_alindi):
+		return
+	_kart_alindi = true
+	_sigorta_alindi = true
+	if _pickup_nodes.has("malzeme"):
+		for n in _pickup_nodes["malzeme"]:
+			if is_instance_valid(n):
+				(n as Node).queue_free()
+		_pickup_nodes.erase("malzeme")
+	_rsay("MERKEZ", "Kart da yedek sigorta da sende. Kartla kilitli kapılar açılır; sigortayı da peron panosuna saklarsın.")
+	_equip_progress()
+	_check_equipment_done()
+
+
+## GUNLUK not defterini al: J tusu aktiflesir, gorev gunlugu acilir
+func _pickup_journal() -> void:
+	if _journal_alindi:
+		return
+	_journal_alindi = true
+	if _pickup_nodes.has("gunluk"):
+		for n in _pickup_nodes["gunluk"]:
+			if is_instance_valid(n):
+				(n as Node).queue_free()
+		_pickup_nodes.erase("gunluk")
+	var j := get_tree().get_first_node_in_group("journal")
+	if j:
+		j.call("acquire")
+	_rsay("BEN", "Vardiya günlüğü. Görevleri buradan takip ederim. J ile açılıyor.")
 
 
 func _open_cctv() -> void:
 	var c := get_tree().get_first_node_in_group("cctv")
 	if c:
 		c.call("open")
+
+
+# ------------------------------------------------ servis koridoru + asansor
+
+## SEKANS 1 mekani: animasyonlu asansor (simple_elevator.glb — kayar kapilar
+## modelin kendi animasyonuyla acilir/kapanir) + dar servis koridoru.
+## Koridor istasyonun malzeme dilinde: beyaz fayans duvar + koyu supurgelik +
+## fayans zemin + stucco tavan. Borular, PERSONEL tabelasi, hafif titrek
+## floresan, karanlik yan pencere (ekim), ucunda camli OFIS kapisi.
+func _build_service_corridor() -> void:
+	var y0 := TOP_Y
+	var cxm := (COR_X0 + COR_X1) * 0.5
+
+	# --- koridor kabugu (istasyonla ayni dil: fayans + stucco) ---
+	_box(Vector3(COR_X1 - COR_X0, 0.3, COR_Z0 - COR_Z1),
+			Vector3(cxm, y0 - 0.15, ELEV_CZ), mat_floor_tile)            # zemin
+	_box(Vector3(COR_X1 - COR_X0, 0.3, COR_Z0 - COR_Z1),
+			Vector3(cxm, y0 + COR_H + 0.15, ELEV_CZ), mat_soffit, false) # tavan
+	_box(Vector3(COR_X1 - COR_X0, COR_H, 0.3),
+			Vector3(cxm, y0 + COR_H * 0.5, COR_Z0 + 0.15), mat_white_tile)  # guney
+	# kuzey duvar: pencere boslugu (x -18.6..-17.4, y +1.1..+2.0)
+	_box(Vector3(-18.6 - COR_X0, COR_H, 0.3),
+			Vector3((COR_X0 - 18.6) * 0.5, y0 + COR_H * 0.5, COR_Z1 - 0.15), mat_marble_tile)
+	_box(Vector3(COR_X1 + 17.4, COR_H, 0.3),
+			Vector3((-17.4 + COR_X1) * 0.5, y0 + COR_H * 0.5, COR_Z1 - 0.15), mat_marble_tile)
+	_box(Vector3(1.2, 1.1, 0.3),
+			Vector3(-18.0, y0 + 0.55, COR_Z1 - 0.15), mat_marble_tile)   # pencere alti
+	_box(Vector3(1.2, COR_H - 2.0, 0.3),
+			Vector3(-18.0, y0 + 2.0 + (COR_H - 2.0) * 0.5, COR_Z1 - 0.15), mat_marble_tile)
+	# supurgelik: koyu bant duvar diplerinde (istasyonun imzasi)
+	# uclar bati/dogu duvar yuzlerine degmez (es duzlem ucu titremesin)
+	_box(Vector3(6.68, 0.36, 0.012),
+			Vector3(-17.6, y0 + 0.18, COR_Z0 - 0.006), mat_dark_tile, false)
+	_box(Vector3(6.68, 0.36, 0.012),
+			Vector3(-17.6, y0 + 0.18, COR_Z1 + 0.006), mat_dark_tile, false)
+
+	# --- yan pencere: parmaklikli, arkasi karanlik bosluk ("ekim") ---
+	var wfm := StandardMaterial3D.new()
+	wfm.albedo_color = Color(0.2, 0.22, 0.23)
+	wfm.metallic = 0.5
+	wfm.roughness = 0.45
+	for wy in [y0 + 1.08, y0 + 2.02]:
+		_box(Vector3(1.24, 0.05, 0.06), Vector3(-18.0, wy, COR_Z1 - 0.02), wfm, false)
+	for wx in [-18.62, -17.38]:
+		_box(Vector3(0.05, 0.99, 0.06), Vector3(wx, y0 + 1.55, COR_Z1 - 0.02), wfm, false)
+	for bx in [-18.3, -18.0, -17.7]:
+		_box(Vector3(0.022, 0.9, 0.022), Vector3(bx, y0 + 1.55, COR_Z1 - 0.06), wfm, false)
+	var wglass := StandardMaterial3D.new()
+	wglass.albedo_color = Color(0.6, 0.68, 0.68, 0.16)
+	wglass.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	wglass.roughness = 0.06
+	wglass.metallic = 0.1
+	_box(Vector3(1.16, 0.9, 0.02), Vector3(-18.0, y0 + 1.55, COR_Z1 - 0.12), wglass, false)
+	# pencere arkasi: kapkaranlik hacim + cok silik soguk isik + kolon silueti
+	# (kutu uclari z=-13.95'te — duvarin ICINDE baslar; -13.8'de duvarin ic
+	# yuzuyle es duzlem olup siyah dikey serit halinde z-fight uretiyordu)
+	_box(Vector3(2.2, 3.2, 0.2), Vector3(-18.0, y0 + 1.5, -16.6), mat_void, false)
+	for vx in [-19.1, -16.9]:
+		_box(Vector3(0.2, 3.2, 2.6), Vector3(vx, y0 + 1.5, -15.25), mat_void, false)
+	_box(Vector3(2.2, 0.2, 2.6), Vector3(-18.0, y0 - 0.1, -15.25), mat_void, false)
+	_box(Vector3(2.2, 0.2, 2.6), Vector3(-18.0, y0 + 3.1, -15.25), mat_void, false)
+	_box(Vector3(0.16, 2.6, 0.16), Vector3(-17.6, y0 + 1.3, -15.8), mat_concrete, false)
+	var wl := OmniLight3D.new()
+	wl.light_color = Color(0.55, 0.72, 0.85)
+	wl.light_energy = 0.22
+	wl.omni_range = 2.6
+	wl.position = Vector3(-18.2, y0 + 1.7, -16.1)
+	add_child(wl)
+
+	# --- borular (guney duvari ustu) + dikey inis ---
+	_tube(Vector3(COR_X0, y0 + 2.32, -11.94), Vector3(COR_X1, y0 + 2.32, -11.94),
+			0.045, mat_pipe)
+	_tube(Vector3(COR_X0, y0 + 2.44, -11.97), Vector3(COR_X1, y0 + 2.44, -11.97),
+			0.028, mat_pipe)
+	_tube(Vector3(-16.2, y0, -11.94), Vector3(-16.2, y0 + 2.32, -11.94), 0.045, mat_pipe)
+
+	# --- PERSONEL tabelasi (guney duvari) ---
+	var pplate := StandardMaterial3D.new()
+	pplate.albedo_color = Color(0.8, 0.79, 0.74)
+	pplate.roughness = 0.55
+	# (guney duvarin IC yuzu z=-11.8; tabela koridora bakar, 1 cm taskin)
+	_box(Vector3(0.72, 0.22, 0.015), Vector3(-19.4, y0 + 1.85, COR_Z0 - 0.01),
+			pplate, false)
+	var plbl := Label3D.new()
+	plbl.text = "PERSONEL SAHASI"
+	plbl.font_size = 26
+	plbl.pixel_size = 0.0011
+	plbl.modulate = Color(0.2, 0.22, 0.24)
+	plbl.position = Vector3(-19.4, y0 + 1.85, COR_Z0 - 0.022)
+	plbl.rotation.y = PI
+	add_child(plbl)
+	_wall_sign("Sign002", Vector3(-15.6, y0 + 1.7, COR_Z0 - 0.02), 180.0, 0.4)
+
+	# --- aydinlatma: soguk floresanlar, ortadaki hafif titrek (eski, ariza degil) ---
+	_fixture(Vector3(-20.1, y0 + COR_H - 0.06, ELEV_CZ), 1.1, Color(0.78, 0.9, 1.0),
+			0.07, 0.94, Vector3(0, -0.3, 0))
+	_fixture(Vector3(-17.9, y0 + COR_H - 0.06, ELEV_CZ), 0.85, Color(0.78, 0.9, 1.0),
+			0.3, 0.62, Vector3(0, -0.3, 0))
+	_fixture(Vector3(-15.4, y0 + COR_H - 0.06, ELEV_CZ), 1.15, Color(0.79, 0.9, 1.0),
+			0.06, 0.95, Vector3(0, -0.3, 0))
+
+	# --- koridor bati ucu: asansor kapisi cevre duvari (fayans) ---
+	# kapi acikligi z = ELEV_CZ ± 0.7; modelin kapi cercevesi (armature) bu
+	# duvarin ONUNDE durur ve kenar birlesimlerini ortter. Duvar dogu yuzu
+	# -21.0'da, model dis kapilari -20.996'da (4 mm onde — es duzlem yok).
+	_box(Vector3(0.3, COR_H, 0.5),
+			Vector3(COR_X0 - 0.15, y0 + COR_H * 0.5, -13.75), mat_white_tile)
+	_box(Vector3(0.3, COR_H, 0.5),
+			Vector3(COR_X0 - 0.15, y0 + COR_H * 0.5, -11.85), mat_white_tile)
+	_box(Vector3(0.3, COR_H - 2.38, 1.4),
+			Vector3(COR_X0 - 0.15, y0 + 2.38 + (COR_H - 2.38) * 0.5, ELEV_CZ),
+			mat_white_tile)
+	# kat gostergesi: kapi ustunde donuk "▼ 7"
+	var flbl := Label3D.new()
+	flbl.text = "▼ 7"
+	flbl.font_size = 30
+	flbl.pixel_size = 0.0013
+	flbl.modulate = Color(0.9, 0.42, 0.2)
+	flbl.position = Vector3(COR_X0 + 0.2, y0 + 2.44, ELEV_CZ)
+	flbl.rotation.y = deg_to_rad(90.0)
+	add_child(flbl)
+
+	# --- animasyonlu asansor modeli (kayar kapilar modelin animasyonunda) ---
+	var eps: PackedScene = load("res://assets/models/elevator/simple_elevator.glb")
+	if eps != null:
+		_elev_holder = Node3D.new()
+		# cikis +x yonune bakar (modelin dogal yonu); kapi duzlemi ~x=-21.0
+		_elev_holder.position = Vector3(COR_X0 - 0.04, y0 - 0.012, ELEV_CZ)
+		_elev_holder.scale = Vector3.ONE * 0.85
+		var einst: Node3D = eps.instantiate()
+		_elev_holder.add_child(einst)
+		add_child(_elev_holder)
+		_elev_anim = einst.find_child("AnimationPlayer", true, false) as AnimationPlayer
+		# modelin fazlaliklari: 15 m'lik bina duvari, zemin duzlemi,
+		# duvara gomulu kalan dis cagirma butonlari — gizle
+		for hname in ["Wall_2", "Plane_16", "ElevatorCallingButtons_12",
+				"ElevatorCallingButtons_007_13", "ElevatorCallingButtons_006_14",
+				"ElevatorCallingButtons_003_15"]:
+			var hn := einst.find_child(hname, true, false)
+			if hn is Node3D:
+				(hn as Node3D).visible = false
+		_elev_cage = einst.find_child("ElevatorCage_11", true, false) as Node3D
+
+	# --- kapi blokeri: kapali kapidan gecilmez (kalici; acilinca devre disi) ---
+	var blk := StaticBody3D.new()
+	var blkc := CollisionShape3D.new()
+	var blks := BoxShape3D.new()
+	blks.size = Vector3(0.16, 2.4, 1.42)
+	blkc.shape = blks
+	blkc.position = Vector3(COR_X0 - 0.02, y0 + 1.2, ELEV_CZ)
+	blk.add_child(blkc)
+	add_child(blk)
+	_elev_blocker_cs = blkc
+
+	# --- kabin ici: gorunmez colliderlar + sicak ampul + ugultu ---
+	# (hepsi _elev_extras altinda — kabin ici serbest birakilinca birlikte gider)
+	_elev_extras = Node3D.new()
+	add_child(_elev_extras)
+	var ecolls := [
+		[Vector3(2.6, 0.3, 2.7), Vector3(-22.25, y0 - 0.15, ELEV_CZ)],       # zemin
+		[Vector3(0.3, 2.9, 2.7), Vector3(-23.45, y0 + 1.45, ELEV_CZ)],       # bati
+		[Vector3(2.6, 2.9, 0.3), Vector3(-22.25, y0 + 1.45, -11.53)],        # guney
+		[Vector3(2.6, 2.9, 0.3), Vector3(-22.25, y0 + 1.45, -14.07)],        # kuzey
+		[Vector3(0.25, 2.9, 0.55), Vector3(-21.15, y0 + 1.45, -11.85)],      # dogu-g
+		[Vector3(0.25, 2.9, 0.62), Vector3(-21.15, y0 + 1.45, -13.79)],      # dogu-k
+		[Vector3(0.25, 0.6, 1.44), Vector3(-21.15, y0 + 2.62, ELEV_CZ)],     # lento
+	]
+	for ec in ecolls:
+		var esb := StaticBody3D.new()
+		var ecs := CollisionShape3D.new()
+		var ebs := BoxShape3D.new()
+		ebs.size = ec[0]
+		ecs.shape = ebs
+		ecs.position = ec[1]
+		esb.add_child(ecs)
+		_elev_extras.add_child(esb)
+	var bulb := OmniLight3D.new()
+	bulb.light_color = Color(1.0, 0.82, 0.58)
+	bulb.light_energy = 1.1
+	bulb.omni_range = 3.4
+	bulb.shadow_enabled = true
+	bulb.position = Vector3(-22.25, y0 + 2.25, ELEV_CZ)
+	_elev_extras.add_child(bulb)
+	# asansor sesi: gercek kayit (LG_Sound — Elevator Running, loop). Kisik
+	# baslar (-30) ve ilk saniyelerde yumusakca yukselir — ani gurultu olmasin
+	_elev_hum = AudioStreamPlayer3D.new()
+	var elev_snd: AudioStream = load("res://assets/audio/elevator_run.mp3")
+	if elev_snd is AudioStreamMP3:
+		(elev_snd as AudioStreamMP3).loop = true
+	_elev_hum.stream = elev_snd
+	_elev_hum.volume_db = -30.0
+	_elev_hum.unit_size = 3.0
+	_elev_hum.max_distance = 15.0
+	_elev_hum.autoplay = true
+	_elev_hum.position = Vector3(-22.25, y0 + 2.2, ELEV_CZ)
+	_elev_extras.add_child(_elev_hum)
+	var eftw := create_tween()
+	eftw.tween_property(_elev_hum, "volume_db", -23.0, 2.5)
+
+	# --- camli OFIS kapisi (koridor tarafina acilir, mentese kuzey sove) ---
+	_glass_door = Node3D.new()
+	_glass_door.position = Vector3(-14.28, y0, -13.32)
+	add_child(_glass_door)
+	var gfrm := StandardMaterial3D.new()
+	gfrm.albedo_color = Color(0.28, 0.31, 0.33)
+	gfrm.metallic = 0.55
+	gfrm.roughness = 0.42
+	# kanat celik cercevesi (alt/ust/yan kusaklar) + cam pano
+	var grects := [
+		[Vector3(0.04, 0.12, 1.02), Vector3(0, 0.06, 0.51)],
+		[Vector3(0.04, 0.12, 1.02), Vector3(0, 2.0, 0.51)],
+		[Vector3(0.04, 1.82, 0.09), Vector3(0, 1.03, 0.045)],
+		[Vector3(0.04, 1.82, 0.09), Vector3(0, 1.03, 0.975)],
+		[Vector3(0.04, 0.68, 1.02), Vector3(0, 0.46, 0.51)],   # alt dolgu panel
+	]
+	for gr in grects:
+		var gmi := MeshInstance3D.new()
+		var gbm := BoxMesh.new()
+		gbm.size = gr[0]
+		gmi.mesh = gbm
+		gmi.material_override = gfrm
+		gmi.position = gr[1]
+		_glass_door.add_child(gmi)
+	var gpane := MeshInstance3D.new()
+	var gpm := BoxMesh.new()
+	gpm.size = Vector3(0.016, 1.14, 0.85)
+	gpane.mesh = gpm
+	var gmat := StandardMaterial3D.new()
+	gmat.albedo_color = Color(0.62, 0.7, 0.7, 0.2)
+	gmat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	gmat.roughness = 0.05
+	gmat.metallic = 0.1
+	gpane.material_override = gmat
+	gpane.position = Vector3(0, 1.37, 0.51)
+	_glass_door.add_child(gpane)
+	# OFIS yazisi (cam ustunde, iki yuz)
+	for gface in [-1.0, 1.0]:
+		var glbl := Label3D.new()
+		glbl.text = "OFİS"
+		glbl.font_size = 34
+		glbl.pixel_size = 0.0016
+		glbl.modulate = Color(0.85, 0.88, 0.86, 0.9)
+		glbl.position = Vector3(gface * 0.024, 1.62, 0.51)
+		glbl.rotation.y = deg_to_rad(90.0 if gface > 0.0 else -90.0)
+		_glass_door.add_child(glbl)
+	# kol
+	for gkx in [-0.035, 0.035]:
+		var gkn := MeshInstance3D.new()
+		var gkm := BoxMesh.new()
+		gkm.size = Vector3(0.025, 0.025, 0.15)
+		gkn.mesh = gkm
+		gkn.material_override = mat_steel_rail
+		gkn.position = Vector3(gkx, 1.04, 0.88)
+		_glass_door.add_child(gkn)
+	# carpisma + etkilesim
+	var gb := StaticBody3D.new()
+	gb.add_to_group("interactable")
+	gb.set_meta("prompt", "[E]  KAPIYI AÇ")
+	gb.set_meta("on_interact", Callable(self, "_toggle_glass_door"))
+	var gc := CollisionShape3D.new()
+	var gsh := BoxShape3D.new()
+	gsh.size = Vector3(0.07, 2.06, 1.02)
+	gc.shape = gsh
+	gc.position = Vector3(0, 1.03, 0.51)
+	gb.add_child(gc)
+	_glass_door.add_child(gb)
+	_glass_door_body = gb
+
+	# --- ofise giris tetigi (Sekans 2 Beat 2) ---
+	var oarea := Area3D.new()
+	var ocs := CollisionShape3D.new()
+	var obs := BoxShape3D.new()
+	obs.size = Vector3(4.6, 2.4, 4.4)
+	ocs.shape = obs
+	ocs.position = Vector3(-11.4, y0 + 1.2, -14.1)
+	oarea.add_child(ocs)
+	oarea.body_entered.connect(func(b: Node3D) -> void:
+		if b is CharacterBody3D:
+			_on_office_entered())
+	add_child(oarea)
 
 
 # ------------------------------------------------------------------ peron
@@ -1932,38 +3412,61 @@ func _build_props() -> void:
 	if clk:
 		_set_clock_time(clk, 4, 17)
 
-	# --- posterler: cerceve + kagit + gorsel alan + baslik (onden okunur afisler) ---
-	var pcolors := [Color(0.32, 0.38, 0.4), Color(0.42, 0.31, 0.24), Color(0.45, 0.45, 0.4),
-			Color(0.25, 0.3, 0.36)]
-	var ptitles := ["SEFER SAATLERİ", "GÜVENLİK HERKESİN\nİŞİDİR", "HİSAR-7\n50. YIL", "KAYIP EŞYA\nDANIŞMA"]
+	# --- posterler: metal cerceve + cam + prosedurel vintage afis (poster shader)
+	# her afis farkli layout+palet+seed ile "eski asilmis afis" gibi okunur ---
+	var pinks := [
+		[Color(0.78, 0.32, 0.16), Color(0.20, 0.16, 0.12)],   # turuncu gunes
+		[Color(0.20, 0.42, 0.46), Color(0.86, 0.78, 0.30)],   # teal/sari deco
+		[Color(0.60, 0.16, 0.18), Color(0.22, 0.24, 0.28)],   # kirmizi blok
+		[Color(0.24, 0.34, 0.52), Color(0.80, 0.55, 0.20)],   # mavi hedef
+	]
+	var ppapers := [Color(0.82, 0.77, 0.63), Color(0.80, 0.76, 0.66),
+			Color(0.78, 0.73, 0.60), Color(0.83, 0.79, 0.68)]
+	var ptitles := ["SEFER SAATLERİ", "GÜVENLİK\nHERKESİN İŞİ", "HİSAR-7\n50. YIL",
+			"KAYIP EŞYA\nDANIŞMA"]
 	var pxs := [-11.6, -5.7, 5.6, 12.1]
 	for i in 4:
+		# metal cerceve (ince, taskin) + cam yansimasi
 		var frame := StandardMaterial3D.new()
-		frame.albedo_color = Color(0.55, 0.57, 0.58)
-		frame.metallic = 0.6
-		frame.roughness = 0.4
-		_detail(frame, 3.0, 0.25)
-		_box(Vector3(0.66, 0.94, 0.022), Vector3(pxs[i], 1.62, 0.011), frame, false)
-		# eskimis afis kagidi
-		var paper := StandardMaterial3D.new()
-		paper.albedo_color = Color(0.68, 0.66, 0.60)
-		paper.roughness = 0.85
-		_detail(paper, 2.0, 0.3, true)
-		_box(Vector3(0.6, 0.88, 0.02), Vector3(pxs[i], 1.62, 0.018), paper, false)
-		# gorsel alani (ust yarim)
-		var pm := StandardMaterial3D.new()
-		pm.albedo_color = pcolors[i]
-		pm.roughness = 0.6
-		_detail(pm, 2.0, 0.35, true)
-		_box(Vector3(0.52, 0.5, 0.016), Vector3(pxs[i], 1.79, 0.024), pm, false)
-		# baslik (alt bant)
+		frame.albedo_color = Color(0.32, 0.33, 0.35)
+		frame.metallic = 0.8
+		frame.roughness = 0.35
+		_detail(frame, 3.0, 0.2)
+		_box(Vector3(0.7, 0.98, 0.03), Vector3(pxs[i], 1.62, 0.01), frame, false)
+		# afis yuzeyi: poster shader
+		var pm := ShaderMaterial.new()
+		pm.shader = load("res://shaders/poster.gdshader")
+		pm.set_shader_parameter("ink_a", pinks[i][0])
+		pm.set_shader_parameter("ink_b", pinks[i][1])
+		pm.set_shader_parameter("paper", ppapers[i])
+		pm.set_shader_parameter("layout", i)
+		pm.set_shader_parameter("seed", float(i) * 1.37 + 0.4)
+		pm.set_shader_parameter("wear", 0.45 + 0.12 * float(i % 3))
+		var pq := QuadMesh.new()
+		pq.size = Vector2(0.62, 0.9)
+		var pmi := MeshInstance3D.new()
+		pmi.mesh = pq
+		pmi.material_override = pm
+		pmi.position = Vector3(pxs[i], 1.62, 0.027)
+		pmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		add_child(pmi)
+		# cam ortu (hafif yansima — cerceveli afis hissi)
+		var glass := StandardMaterial3D.new()
+		glass.albedo_color = Color(0.7, 0.75, 0.78, 0.06)
+		glass.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		glass.roughness = 0.08
+		glass.metallic = 0.2
+		_box(Vector3(0.62, 0.9, 0.006), Vector3(pxs[i], 1.62, 0.031), glass, false)
+		# baslik (afisin alt bandinda, shader'in koyu seridi uzerinde)
 		var plabel := Label3D.new()
 		plabel.text = ptitles[i]
 		plabel.font_size = 30
-		plabel.pixel_size = 0.0012
+		plabel.pixel_size = 0.0011
 		plabel.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		plabel.modulate = Color(0.18, 0.20, 0.22)
-		plabel.position = Vector3(pxs[i], 1.40, 0.032)
+		plabel.modulate = Color(0.9, 0.88, 0.82)
+		plabel.outline_modulate = Color(0, 0, 0, 0.6)
+		plabel.outline_size = 4
+		plabel.position = Vector3(pxs[i], 1.36, 0.034)
 		add_child(plabel)
 
 	# --- peron kenari uyari yazisi (karsi duvarda kucuk) ---
@@ -2208,6 +3711,10 @@ func _build_lights() -> void:
 		add_child(d)
 		_aux_lights.append(d)
 
+	# peron kati ENERJISIZ baslar (ilk gorev: A panosu salteri onu besler).
+	# Oyuncu karanlik perona fenerle iner, salteri kaldirir, isiklar yanar.
+	_set_platform_power(false)
+
 
 # ------------------------------------------------------------------ ortam + ses
 
@@ -2270,6 +3777,16 @@ func _build_environment() -> void:
 
 
 func _build_audio() -> void:
+	# --- MASTER MIX: kulaklikta patlamayi onle ---
+	# hafif headroom (-4 dB) + limiter (tepe kirpmasini yumusatir). "Her ses
+	# patliyor" sikayetinin ana cozumu: ani tepeler tavana carpmaz.
+	AudioServer.set_bus_volume_db(0, -4.0)
+	var lim := AudioEffectLimiter.new()
+	lim.ceiling_db = -1.5
+	lim.threshold_db = -8.0
+	lim.soft_clip_db = 4.0
+	AudioServer.add_bus_effect(0, lim)
+
 	# Ana gerilim: "Unseen Horrors" — Kevin MacLeod (incompetech.com, CC-BY 4.0).
 	# Gercek korku ambiyansi: yavas gelisen, rahatsiz edici.
 	var stream: AudioStream = load("res://assets/audio/tension.mp3")
@@ -2284,13 +3801,13 @@ func _build_audio() -> void:
 		AudioServer.set_bus_send(bus_idx, "Master")
 		AudioServer.add_bus_effect(bus_idx, AudioEffectSpectrumAnalyzer.new())
 		_tension_inst = AudioServer.get_bus_effect_instance(bus_idx, 0)
-		var mus := AudioStreamPlayer.new()
-		mus.stream = stream
-		mus.volume_db = -12.0
-		mus.autoplay = true
-		mus.bus = "Tension"
-		add_child(mus)
-		mus.play()
+		# BAGLAM DUYARLI: muzik acilista CALMAZ (sekans 1-2 sakin/gundelik).
+		# Oyuncu ilk kez peron katina indiginde yavasca girer (_process tetikler).
+		_mus = AudioStreamPlayer.new()
+		_mus.stream = stream
+		_mus.volume_db = -40.0
+		_mus.bus = "Tension"
+		add_child(_mus)
 
 	# tunel agizlari: sabit derin ugultu (konumsal — yaklastikca buyur)
 	var rumble: AudioStream = load("res://assets/audio/dark_drone.ogg")
@@ -2299,7 +3816,7 @@ func _build_audio() -> void:
 		for sx in [-1.0, 1.0]:
 			var r := AudioStreamPlayer3D.new()
 			r.stream = rumble
-			r.volume_db = -6.0
+			r.volume_db = -13.0
 			r.pitch_scale = 0.55 if sx < 0.0 else 0.62
 			r.unit_size = 3.5
 			r.max_distance = 26.0
@@ -2363,19 +3880,62 @@ func _build_post_fx() -> void:
 	lbl.add_theme_font_size_override("font_size", 22)
 	layer.add_child(lbl)
 
-	# etkilesim ipucu: ekran ortasinin hemen alti ("[E] ..." — player.gd yonetir)
-	var ilbl := Label.new()
-	ilbl.add_to_group("interact_label")
-	ilbl.visible = false
-	ilbl.set_anchors_preset(Control.PRESET_FULL_RECT)
-	ilbl.offset_top = 90.0
-	ilbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	ilbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	ilbl.add_theme_font_size_override("font_size", 19)
-	ilbl.add_theme_color_override("font_color", Color(0.88, 0.94, 0.9, 0.92))
-	ilbl.add_theme_color_override("font_outline_color", Color(0, 0.02, 0.02, 0.85))
-	ilbl.add_theme_constant_override("outline_size", 6)
-	layer.add_child(ilbl)
+	# etkilesim gostergesi: cerceveli tus kutusu ["E"] + eylem metni (player.gd yonetir)
+	# ekran ortasinin hemen alti, ortalanmis HBox
+	var icenter := Control.new()
+	icenter.add_to_group("interact_panel")
+	icenter.visible = false
+	icenter.set_anchors_preset(Control.PRESET_CENTER)
+	icenter.offset_top = 74.0
+	icenter.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	icenter.grow_vertical = Control.GROW_DIRECTION_BOTH
+	layer.add_child(icenter)
+	var ihb := HBoxContainer.new()
+	ihb.add_theme_constant_override("separation", 11)
+	ihb.set_anchors_preset(Control.PRESET_CENTER)
+	ihb.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	ihb.grow_vertical = Control.GROW_DIRECTION_BOTH
+	icenter.add_child(ihb)
+	# tus kutusu: yuvarlak kosekli koyu panel + "E"
+	var keybox := PanelContainer.new()
+	var ksb := StyleBoxFlat.new()
+	ksb.bg_color = Color(0.9, 0.93, 0.9, 0.92)
+	ksb.set_corner_radius_all(5)
+	ksb.content_margin_left = 11.0
+	ksb.content_margin_right = 11.0
+	ksb.content_margin_top = 3.0
+	ksb.content_margin_bottom = 4.0
+	ksb.shadow_color = Color(0, 0, 0, 0.5)
+	ksb.shadow_size = 5
+	keybox.add_theme_stylebox_override("panel", ksb)
+	keybox.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	ihb.add_child(keybox)
+	var keylbl := Label.new()
+	keylbl.text = "E"
+	keylbl.add_theme_font_override("font", load("res://assets/fonts/Barlow-SemiBold.ttf"))
+	keylbl.add_theme_font_size_override("font_size", 20)
+	keylbl.add_theme_color_override("font_color", Color(0.08, 0.1, 0.09))
+	keybox.add_child(keylbl)
+	# eylem metni
+	var itxt := Label.new()
+	itxt.add_to_group("interact_text")
+	itxt.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	itxt.add_theme_font_override("font", load("res://assets/fonts/Barlow-Medium.ttf"))
+	itxt.add_theme_font_size_override("font_size", 21)
+	itxt.add_theme_color_override("font_color", Color(0.92, 0.96, 0.93))
+	itxt.add_theme_color_override("font_outline_color", Color(0, 0.02, 0.02, 0.9))
+	itxt.add_theme_constant_override("outline_size", 6)
+	ihb.add_child(itxt)
+
+	# foto modu bildirimi (sol ust, kisa sure gorunur)
+	_photo_label = Label.new()
+	_photo_label.visible = false
+	_photo_label.position = Vector2(24, 56)
+	_photo_label.add_theme_font_size_override("font_size", 16)
+	_photo_label.add_theme_color_override("font_color", Color(0.85, 0.95, 0.88, 0.9))
+	_photo_label.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.8))
+	_photo_label.add_theme_constant_override("outline_size", 5)
+	layer.add_child(_photo_label)
 
 
 func _build_pause_menu() -> void:
@@ -2387,11 +3947,11 @@ func _build_pause_menu() -> void:
 func _spawn_player() -> void:
 	var p := CharacterBody3D.new()
 	p.set_script(load("res://scripts/player.gd"))
-	# oyun kontrol odasinda baslar (zimmet masasina donuk — terminal + fener orada)
-	p.position = Vector3(-10.3, TOP_Y + 0.02, -14.6)
+	# SEKANS 1: oyun asansor kabininde baslar (zaten iniyoruz), yuz kapiya donuk
+	p.position = Vector3(-22.3, TOP_Y + 0.02, ELEV_CZ)
 	p.add_to_group("player")
 	add_child(p)
-	p.call("set_view", 154.0, 2.0)
+	p.call("set_view", -90.0, 0.0)
 	# siluet korkutmacasi: peron ucunda arkani donunce merdivene kacan figur.
 	# Baslangicta KAPALI — telefon olayindan sonra aktiflesir (gec asama korkusu)
 	_scare = Node3D.new()

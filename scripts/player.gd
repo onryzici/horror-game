@@ -73,6 +73,14 @@ func set_view(yaw_deg: float, pitch_deg: float) -> void:
 	_yaw = deg_to_rad(yaw_deg)
 	_pitch = deg_to_rad(pitch_deg)
 
+
+## Fener gucu: false = ciliz (pil bitmis), true = tam guc (pil takili)
+func set_flashlight_power(full: bool) -> void:
+	if _flashlight == null:
+		return
+	_flashlight.light_energy = 3.4 if full else 0.7
+	_flashlight.spot_range = 17.0 if full else 7.0
+
 func _unhandled_input(event: InputEvent) -> void:
 	if locked:
 		return
@@ -191,10 +199,13 @@ func _process(delta: float) -> void:
 		lbl.visible = _zoom > 1.05
 		lbl.text = "ZOOM %.1fx" % _zoom
 
-	# etkilesim ipucu: bakilan nesne etkilesilebilirse goster
-	var il := get_tree().get_first_node_in_group("interact_label")
-	if il and il is Label:
+	# etkilesim gostergesi: tus kutusu + eylem metni (main.gd kurar)
+	var ip := get_tree().get_first_node_in_group("interact_panel")
+	var it := get_tree().get_first_node_in_group("interact_text")
+	if ip and it is Label:
 		var tgt := _aim_target()
-		il.visible = tgt != null and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED
+		ip.visible = tgt != null and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED
 		if tgt:
-			il.text = str(tgt.get_meta("prompt", "[E]"))
+			# prompt "[E]  METIN" — tus kutusu sabit, yalniz eylem metnini goster
+			var p := str(tgt.get_meta("prompt", ""))
+			it.text = p.replace("[E]  ", "").replace("[E] ", "").replace("[E]", "")

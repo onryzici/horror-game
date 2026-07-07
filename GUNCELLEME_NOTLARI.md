@@ -1,5 +1,46 @@
 # SON SEFER — Güncelleme Notları
 
+## 2026-07-07 (11) — SEKANS SİSTEMİ: asansör inişi, vardiya başlatma prosedürü, günlük, sesler
+
+### Sekans 1 — İniş (asansör)
+- Oyun artık **animasyonlu asansör kabininde** başlıyor (`simple_elevator.glb`, kendi kayar
+  kapı animasyonuyla). Servis koridoru + camlı OFİS kapısıyla ofise bağlanıyor.
+- **Kulaklık önerisi kartı** + HİSAR-7 açılış kartı; iniş hızlandırıldı, varış "clank" sesi
+  kaldırıldı, kapı sesi kısıldı.
+- Telsiz **çalar** (sol altta telsiz ikonu + [Q] göstergesi), oyuncu **Q** ile cevaplar;
+  ilk temastan sonra hat açık kalır (Merkez çağrı yapmadan direkt konuşur).
+
+### Sekans 2 — Ofis: Vardiya Başlatma Prosedürü
+- Ofis **karanlık** başlar, çelik kapı **kapalı**. Adım adım, tek görev akışı:
+  **ana pano (şalter) → giriş defteri (imza) → sistem senkron → kameraları devreye al →
+  bölge taraması → ekipman kuşan**.
+- **Kameralar tek tek açılıyor** (BOŞLUK); her kamera için Merkez konuşuyor, 6. (alt peron)
+  ölü/karlı kalıyor. Replik bitmeden sonraki kameraya geçilemiyor.
+- **Ekipman** zimmet masasında: terminal, fener (cılız → dolaptan/masadan pil ile güçlenir),
+  kart + yedek sigorta. Konsol yalnız sistem/kamera; terminalle karışmıyor.
+- Ana pano artık **gerçek elektrik panosu modeli** (yapay kutu/LED değil).
+
+### Görev Günlüğü (yeni)
+- CCTV masasındaki not defteri **E** ile alınıyor → **J** tuşuyla açılan görev günlüğü.
+- Aktif görevler listeleniyor; **tamamlananların üstü çizili** ✓. Görevler akışın kilit
+  noktalarında otomatik ekleniyor/tamamlanıyor.
+
+### Yeni sistemler ve cila
+- **Obje inceleme** (E): model ekran ortasına gelir, arka plan buğulu, fare ile döndürülür
+  (vardiya çizelgesi, bakım defteri, termos, gazete kupürü, takvim).
+- **Foto modu** (P / F12): menüsüz anlık ekran görüntüsü → `~/Desktop/Peronomaly_shots/`.
+- **Poster shader**: peron/hol afişleri prosedürel vintage metro afişi.
+- **Profesyonel etkileşim göstergesi**: çerçeveli tuş kutusu [E] + eylem metni.
+- **Yeni ESC menüsü** (oyun fontları, bölümlü ayarlar).
+- **Gerçek ses kayıtları**: telsiz çalma/squelch, asansör motoru, tersten işlenmiş telsiz
+  konuşma dokusu; Master limiter ile ses dengesi (kulaklıkta patlama önlendi).
+
+### Diyaloglar
+- **En son diyaloglar (`DIYALOGLAR.md`) güncellendi — bir sonraki sürümde etkinleştirilecek.**
+  Oyundaki metinler o zaman bu belgeye göre yenilenecek.
+
+---
+
 ## 2026-07-06 (10) — KONTROL ODASI yeniden: CCTV sistemi, alınabilir terminal+fener; 3 görsel bug
 
 ### Görsel bug düzeltmeleri (kullanıcı ekran görüntüleri)
